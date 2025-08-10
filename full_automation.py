@@ -7,6 +7,7 @@ import pdfplumber  # Add this library to extract text from PDFs
 from bs4 import BeautifulSoup
 from openai import OpenAI
 import json
+import re
 
 load_dotenv()
 
@@ -341,7 +342,18 @@ def send_whatsapp_message(to_number):
     return message.sid
 
 
-
+def extract_email(resume_text):
+    # Define a regular expression for matching an email address
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    
+    # Use re.findall to find all matches of the email pattern in the resume text
+    emails = re.findall(email_pattern, resume_text)
+    
+    # If there is at least one email address found, return the first one
+    if emails:
+        return emails[0]
+    else:
+        return None
 
 # Main function to process candidate resume
 def process_candidate_resume(person_id, resume_id, job_id):
@@ -402,7 +414,7 @@ if __name__ == "__main__":
     print(resume_file)
     print(job_id)
     print(person)
-    print(EXPECTED_EMAIL)
+    #print(EXPECTED_EMAIL)
     print(phone_number)
     #apply_for_job(job_id, person, email, phone, resume_filename)
     #apply_for_job(job_id, person, EXPECTED_EMAIL, phone_number, resume_file)
@@ -410,25 +422,51 @@ if __name__ == "__main__":
     overall_score = evaluation_result['overall_score']
 
 
-    if overall_score > 60:
+    
     
 
-        url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
+    url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
 
-        files = { "resume": ("ANISH_PATIL_CV.pdf", open("ANISH_PATIL_CV.pdf", "rb"), "application/pdf") }
-        payload = {
-            "name": f"{person}",
-            "phone": f"{phone_number}",
-            "email": f"{EXPECTED_EMAIL}"
-        }
-        headers = {
-            "accept": "application/json",
-            "authorization": f"Bearer {API_KEY}"
-        }
+    files = { "resume": ("ANISH_PATIL_CV.pdf", open("ANISH_PATIL_CV.pdf", "rb"), "application/pdf") }
+    payload = {
+        "name": f"{person}",
+        "phone": f"{phone_number}",
+        "email": f"{EXPECTED_EMAIL}"
+    }
+    headers = {
+        "accept": "application/json",
+        "authorization": f"Bearer {API_KEY}"
+    }
 
-        response = requests.post(url, data=payload, files=files, headers=headers)
+    response = requests.post(url, data=payload, files=files, headers=headers)
 
-        print(response.text)
+    #print(response.text)
+
+    resume_text = """
+    ANISH VINIT PATIL
+    apanishpatil839@gmail.com | +91-9833944247 | github.com/Anishpatil | linkdin.com/anishpatil
+    Education
+    Terna Engineering College ( currently TEC ), India 2021 - 2025
+    ● Computer Engineering
+    S.B.J School, India 2020 - 2021
+    ● HSC (Class XII),
+    Arya Gurukul School, India 2018 - 2019
+    ● CBSE (Class X)
+    Skills
+    Python | Machine Learning | MongoDB | Flask | MySQL | Git | NLP | Firebase | Excel | Power BI | JavaScript | Ollama |
+    LangChain | LLMs
+    """
+
+    # Call the function to extract the email
+    email_id = extract_email(resume_text)
+    print(f"Extracted Email ID: {email_id}")
+
+    #print(f"Extracted Email ID: apanishpatil839@gmail.com")
+
+    if overall_score > 60:
+        print("AI Accepted")
+    else:
+        print("AI Rejected")
 
     #get_job_applications(job_id)
     #save_job_description(job_title, job_description)
