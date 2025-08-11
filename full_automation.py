@@ -1,4 +1,4 @@
-import os
+#import os
 import requests
 from dotenv import load_dotenv
 from twilio.rest import Client
@@ -7,7 +7,17 @@ import pdfplumber  # Add this library to extract text from PDFs
 from bs4 import BeautifulSoup
 from openai import OpenAI
 import json
-import re
+#import re
+
+import os, re, base64, tempfile
+from typing import Tuple, Optional, Dict, Any
+from datetime import datetime
+#from bs4 import BeautifulSoup
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
 
 load_dotenv()
 
@@ -31,7 +41,200 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-EXPECTED_EMAIL = "runningoutofuniqueemail@gmail.com"  # Hardcoded for now
+#EXPECTED_EMAIL = "runningoutofuniqueemail@gmail.com"  # Hardcoded for now
+
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+# ---------- OAuth / Service ----------
+
+def get_gmail_service():
+    creds = None
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open("token.json", "w") as f:
+            f.write(creds.to_json())
+    return build("gmail", "v1", credentials=creds)
+
+# ---------- Helpers ----------
+
+def _b64url_to_bytes(s: str) -> bytes:
+    if not s:
+        return b""
+    padding = 4 - (len(s) % 4)
+    if padding and padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s)
+
+def _walk_parts(payload: Dict[str, Any]):
+    stack = [payload]
+    while stack:
+        part = stack.pop()
+        yield part
+        for p in part.get("parts", []) or []:
+            stack.append(p)
+
+def _get_subject(msg: Dict[str, Any]) -> str:
+    for h in msg.get("payload", {}).get("headers", []):
+        if h.get("name") == "Subject":
+            return h.get("value", "")
+    return ""
+
+def _get_html_and_text(payload) -> Tuple[Optional[str], Optional[str]]:
+    html, text = None, None
+    for part in _walk_parts(payload):
+        mime = part.get("mimeType", "")
+        data = part.get("body", {}).get("data")
+        if not data:
+            continue
+        try:
+            raw = _b64url_to_bytes(data).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if mime == "text/html" and html is None:
+            html = raw
+        elif mime == "text/plain" and text is None:
+            text = raw
+    return html, text
+
+def _parse_name_and_title(html: Optional[str], text: Optional[str], subject: str) -> Tuple[Optional[str], Optional[str]]:
+    def parse_lines(lines):
+        cand, title = None, None
+        for i, line in enumerate(lines):
+            if line.lower().endswith("applied"):
+                cand = line[: -len("applied")].strip()
+                if i + 1 < len(lines):
+                    nxt = lines[i + 1]
+                    title = re.split(r"[•,|-]", nxt)[0].strip()
+                break
+        return cand, title
+
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+        lines = [l.strip() for l in soup.get_text("\n").splitlines() if l.strip()]
+        cand, title = parse_lines(lines)
+        if cand or title:
+            return cand, title
+
+    if text:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        cand, title = parse_lines(lines)
+        if cand or title:
+            return cand, title
+
+    jt = None
+    m = re.search(r"New application for\s*(.*?)(?:,|$)", subject, re.I)
+    if m:
+        jt = m.group(1).strip()
+
+    return None, jt
+
+def _safe_filename(name: str) -> str:
+    # keep alnum, dot, dash, underscore, space
+    safe = re.sub(r"[^A-Za-z0-9.\- _]", "_", name).strip()
+    return safe or "attachment"
+
+def _unique_path(directory: str, filename: str) -> str:
+    base, ext = os.path.splitext(filename)
+    candidate = os.path.join(directory, filename)
+    i = 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(directory, f"{base} ({i}){ext}")
+        i += 1
+    return candidate
+
+def _download_first_resume_attachment(service, msg, download_dir: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Downloads the first PDF/DOC/DOCX attachment.
+    Returns (file_path, filename) or (None, None).
+    """
+    for part in _walk_parts(msg.get("payload", {})):
+        filename = part.get("filename", "")
+        if not filename:
+            continue
+        if not filename.lower().endswith((".pdf", ".doc", ".docx")):
+            continue
+
+        body = part.get("body", {})
+        att_id = body.get("attachmentId")
+        if not att_id:
+            continue
+
+        att = service.users().messages().attachments().get(
+            userId="me", messageId=msg["id"], id=att_id
+        ).execute()
+        file_bytes = _b64url_to_bytes(att.get("data", ""))
+
+        # Decide where to save
+        if download_dir:
+            os.makedirs(download_dir, exist_ok=True)
+            safe_name = _safe_filename(filename)
+            path = _unique_path(download_dir, safe_name)
+            with open(path, "wb") as f:
+                f.write(file_bytes)
+        else:
+            # temp file fallback
+            fd, path = tempfile.mkstemp(prefix="resume_", suffix=os.path.splitext(filename)[1] or ".bin")
+            os.close(fd)
+            with open(path, "wb") as f:
+                f.write(file_bytes)
+
+        return path, filename
+    return None, None
+
+# ---------- Public function ----------
+
+
+def extract_text_from_pdf(pdf_file):
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text()
+            return text
+    except Exception as e:
+        print(f"❌ Failed to extract text from PDF. Error: {e}")
+        return None
+
+def fetch_application(query: str, download_dir: Optional[str] = None):
+    """
+    Returns:
+      {
+        'candidate_name': str|None,
+        'job_title': str|None,
+        'resume_path': str|None,
+        'resume_filename': str|None,
+        'message_id': str|None,
+        'subject': str
+      }
+    """
+    service = get_gmail_service()
+
+    resp = service.users().messages().list(userId="me", q=query, maxResults=1).execute()
+    msgs = resp.get("messages", [])
+    if not msgs:
+        return {'candidate_name': None, 'job_title': None, 'resume_path': None,
+                'resume_filename': None, 'message_id': None, 'subject': None}
+
+    msg = service.users().messages().get(userId="me", id=msgs[0]["id"], format="full").execute()
+    subject = _get_subject(msg)
+    html, text = _get_html_and_text(msg.get("payload", {}))
+    candidate_name, job_title = _parse_name_and_title(html, text, subject)
+    resume_path, resume_filename = _download_first_resume_attachment(service, msg, download_dir)
+
+    return {
+        'candidate_name': candidate_name,
+        'job_title': job_title,
+        'resume_path': resume_path,
+        'resume_filename': resume_filename,
+        'message_id': msg.get('id'),
+        'subject': subject
+    }
 
 # Function to search for a person by name or email
 def search_person_by_name(name_or_email):
@@ -102,25 +305,7 @@ def find_job_by_title(title):
     return None, None
 
 # Function to download resume
-def download_resume(person_id, resume_id):
-    url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}/resumes/{resume_id}/download"
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Accept": "application/json"
-    }
 
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 200:
-        resume_filename = f"resume_{person_id}_{resume_id}.pdf"
-        with open(resume_filename, "wb") as f:
-            f.write(response.content)
-        print(f"✅ Resume downloaded successfully as {resume_filename}")
-        return resume_filename
-    else:
-        print(f"❌ Failed to download the resume. Status code: {response.status_code}")
-        return None
 
 def save_job_description(job_title, job_description):
     """Inserts a new job description into the database."""
@@ -164,75 +349,7 @@ def retrieve_job_description(job_id):
     return clean_description
 
 
-def apply_for_job(job_id, name, phone, email, resume_filename):
-    
-    url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
-    
-    # Prepare the resume file for upload
-    with open(resume_filename, "rb") as resume_file:
-        files = { 
-            "resume": (resume_filename, resume_file, "application/pdf")
-        }
 
-        # Prepare the payload with the required candidate info
-        payload = {
-            "name": name,          # Candidate's name
-            "phone": phone,        # Candidate's phone number
-            "email": email         # Candidate's email address
-        }
-
-        # Prepare headers with authorization
-        headers = {
-            "accept": "application/json",
-            "authorization": f"Bearer {API_KEY}"
-        }
-
-        # Send the POST request to apply for the job
-        response = requests.post(url, data=payload, files=files, headers=headers)
-
-    # Check the response status
-    if response.status_code == 200:
-        print("✅ Job application submitted successfully!")
-        return response.json()  # Return the response data if needed
-    else:
-        print(f"❌ Failed to apply for the job. Status code: {response.status_code}")
-        print(f"Response: {response.text}")  # Print out the error response for debugging
-        return None
-
-def apply_for_job(job_id, name, email, phone, resume_filename):
-    url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
-    
-    headers = {
-        "accept": "application/json",
-        "content-type": "multipart/form-data",
-        "authorization": f"Bearer {API_KEY}"
-    }
-
-    # Open the resume file in binary mode to send as part of the POST request
-    try:
-        with open(resume_filename, "rb") as resume_file:
-            files = {
-                "email": (None, email),  # Email of the candidate
-                "name": (None, name),    # Name of the candidate
-                "phone": (None, phone),  # Phone number of the candidate
-                "resume": (resume_filename, resume_file, "application/pdf")  # The resume file
-            }
-
-            # Send the POST request
-            response = requests.post(url, headers=headers, files=files)
-
-        # Check if the response was successful
-        if response.status_code == 200:
-            print("✅ Job application submitted successfully!")
-            print(f"Response Data: {response.json()}")  # Print the response to verify submission
-            return response.json()  # Return the response data if needed
-        else:
-            print(f"❌ Failed to apply for the job. Status code: {response.status_code}")
-            print(f"Response: {response.text}")  # Print out the detailed error response for debugging
-            return None
-    except Exception as e:
-        print(f"Error during file upload: {str(e)}")
-        return None
 
 
 
@@ -356,19 +473,12 @@ def extract_email(resume_text):
         return None
 
 # Main function to process candidate resume
-def process_candidate_resume(person_id, resume_id, job_id):
+def process_candidate_resume(job_id):
     # Download the resume
-    resume = download_resume(person_id, resume_id)
-    if not resume:
-        print("❌ Failed to download resume.")
-        return
+    
     
     # Extract text from the downloaded resume
-    resume_text = extract_text_from_pdf(resume)
-    print(resume_text)
-    if not resume_text:
-        print("❌ Failed to extract text from resume.")
-        return
+    
     
     # Retrieve the job description
     job_description = retrieve_job_description(job_id)
@@ -377,14 +487,35 @@ def process_candidate_resume(person_id, resume_id, job_id):
     evaluation_result = evaluate_candidate_with_llm(resume_text, job_description)
     print(f"📝 Evaluation Result: {evaluation_result}")
 
-    return job_description , resume, evaluation_result
+    return job_description , evaluation_result
 
 
 
 # Example usage
 if __name__ == "__main__":
-    candidate_name_or_email = "Anish Patil" 
-    job_title = "Test Job"
+    #candidate_name_or_email = "Anish Patil" 
+    #job_title = "Test Job"
+
+    query = 'subject:"New application for Test Job, Bow, NH" has:attachment newer_than:7d'
+    # Set your folder here (Windows example). Create if it doesn't exist.
+    download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
+    result = fetch_application(query, download_dir=download_folder)
+
+    resume_path = result['resume_path']  # this is the real saved file path
+    if not resume_path or not os.path.exists(resume_path):
+        raise FileNotFoundError("Resume file not found")
+
+    resume_text = extract_text_from_pdf(resume_path)
+    
+
+    #resume_text = extract_text_from_pdf("ANISH_PATIL_CV.pdf")
+    print(resume_text)
+
+    EXPECTED_EMAIL = extract_email(resume_text)
+    print(EXPECTED_EMAIL)
+
+    candidate_name_or_email = result['candidate_name'] 
+    job_title = result['job_title']
 
     print(f"🔍 Looking for candidate: {candidate_name_or_email}")
     person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
@@ -406,12 +537,12 @@ if __name__ == "__main__":
         print("❌ Job not found.")
         exit()
 
-    resume_id = 82078278  # Replace with the actual resume ID
+    #resume_id = 82078278  # Replace with the actual resume ID
     print("🔗 Processing candidate's resume and job description...")
     #job_description = process_candidate_resume(person_id, resume_id, job_id)
     
-    job_description, resume_file, evaluation_result = process_candidate_resume(226713500, resume_id, job_id)
-    print(resume_file)
+    job_description, evaluation_result = process_candidate_resume(job_id)
+    #print(resume_file)
     print(job_id)
     print(person)
     #print(EXPECTED_EMAIL)
@@ -426,8 +557,8 @@ if __name__ == "__main__":
     
 
     url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
-
-    files = { "resume": ("ANISH_PATIL_CV.pdf", open("ANISH_PATIL_CV.pdf", "rb"), "application/pdf") }
+    #url = f"https://app.loxo.co/api/{agency_slug}/jobs/{job_id}/apply"
+    files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
     payload = {
         "name": f"{person}",
         "phone": f"{phone_number}",
@@ -440,22 +571,9 @@ if __name__ == "__main__":
 
     response = requests.post(url, data=payload, files=files, headers=headers)
 
-    #print(response.text)
+    print(response.text)
 
-    resume_text = """
-    ANISH VINIT PATIL
-    apanishpatil839@gmail.com | +91-9833944247 | github.com/Anishpatil | linkdin.com/anishpatil
-    Education
-    Terna Engineering College ( currently TEC ), India 2021 - 2025
-    ● Computer Engineering
-    S.B.J School, India 2020 - 2021
-    ● HSC (Class XII),
-    Arya Gurukul School, India 2018 - 2019
-    ● CBSE (Class X)
-    Skills
-    Python | Machine Learning | MongoDB | Flask | MySQL | Git | NLP | Firebase | Excel | Power BI | JavaScript | Ollama |
-    LangChain | LLMs
-    """
+    
 
     # Call the function to extract the email
     email_id = extract_email(resume_text)
