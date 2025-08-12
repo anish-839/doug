@@ -552,6 +552,8 @@ if __name__ == "__main__":
 
     overall_score = evaluation_result['overall_score']
 
+    ah_pronoun = "AI Accepted" if overall_score > 60 else "AI Rejected"
+
 
     
     
@@ -562,7 +564,9 @@ if __name__ == "__main__":
     payload = {
         "name": f"{person}",
         "phone": f"{phone_number}",
-        "email": f"{EXPECTED_EMAIL}"
+        "email": f"{EXPECTED_EMAIL}",
+        "pronoun_id": f"{overall_score}",
+        "other_pronoun": f"{ah_pronoun}",
     }
     headers = {
         "accept": "application/json",
@@ -571,7 +575,7 @@ if __name__ == "__main__":
 
     response = requests.post(url, data=payload, files=files, headers=headers)
 
-    print(response.text)
+    #print(response.text)
 
     
 
@@ -582,9 +586,34 @@ if __name__ == "__main__":
     #print(f"Extracted Email ID: apanishpatil839@gmail.com")
 
     if overall_score > 60:
-        print("AI Accepted")
+        ah_tag = "AI Accepted"
     else:
-        print("AI Rejected")
+        ah_tag = "AI Rejected"
+
+    
+
+    #import requests
+
+    url = f"https://app.loxo.co/api/bronwick-recruiting-and-staffing/people/{person_id}"
+
+    # Create the payload with dynamic variables
+    payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001--"""
+
+    # Define the headers
+    headers = {
+        "accept": "application/json",
+        "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+        "authorization": "Bearer ee262a9343f662dde109e07c58a00009e4ce9d0fa3e77730335aeb87e859ca7bd79b1e9e3a84a40c84e0cbbd2f97dbacb88621560117adca5bae1a3aede824e59a17aee72a82011ea53d0c0617a7e9a5246d2d0455debdb710590ac80d3350f7ecbf65d78842a0256ff35f28f00b63d62210f0ee46f961ea91ce560bf3773b64"
+    }
+
+    # Send the PUT request
+    response = requests.put(url, data=payload, headers=headers)
+
+    # Print the response text
+    #print(response.text)
+
+
+    #print(response.text)
 
     #get_job_applications(job_id)
     #save_job_description(job_title, job_description)
