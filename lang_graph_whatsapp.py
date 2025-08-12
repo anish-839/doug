@@ -94,9 +94,6 @@ class JobScreeningAgent:
         # Send to LLM for evaluation using `invoke` and pass the prompt as a string
         evaluation = llm.invoke(prompt)
 
-        # Print the raw evaluation output in the terminal
-        print(f"Raw Evaluation Output: {evaluation}")  # Debug: Print raw output from LLM
-
         # Assuming the LLM returns structured feedback, parse it to extract scores
         evaluation_data = self.extract_scores_from_evaluation(evaluation)
 
@@ -141,12 +138,30 @@ def whatsapp_reply():
 
     # Check if user already has a conversation state
     if from_number not in user_state:
-        # Start a new conversation if user doesn't exist in state
-        agent = JobScreeningAgent("Shop Helper/Laborer")
-        user_state[from_number] = {'agent': agent, 'question': 0}
-        question = agent.get_question()
-        user_state[from_number]['question'] = agent.current_question
-        return send_message(question, from_number)
+        # Ask the user to specify the job title
+        user_state[from_number] = {'step': 'ask_job_title'}
+        return send_message("Thanks for responding! Before we get started, could you please specify the position you applied for?", from_number)
+
+    # Handle the step where user specifies the job title
+    if user_state[from_number]['step'] == 'ask_job_title':
+        job_title = incoming_msg.strip().lower()  # Convert to lowercase for easier matching
+
+        # Search job_questions.json for matching job title
+        matched_job = None
+        for job in job_questions.keys():
+            if job_title in job.lower():  # Case-insensitive matching
+                matched_job = job
+                break
+
+        if matched_job:
+            # Initialize the agent for the matched job
+            agent = JobScreeningAgent(matched_job)
+            user_state[from_number] = {'agent': agent, 'question': 0, 'step': 'asking_questions'}
+            question = agent.get_question()
+            user_state[from_number]['question'] = agent.current_question
+            return send_message(question, from_number)
+        else:
+            return send_message("Sorry, I couldn't find a matching job title. Could you please specify the job again?", from_number)
 
     # Get the existing agent and question
     agent = user_state[from_number]['agent']
@@ -172,7 +187,6 @@ def whatsapp_reply():
         user_state[from_number]['question'] = agent.current_question
         # Send only the next question (not the feedback)
         return send_message(chatbot_response, from_number, question)
-
     return send_message(chatbot_response, from_number)
 
 def send_message(message, from_number, next_question=None):
@@ -185,9 +199,6 @@ def send_message(message, from_number, next_question=None):
     #     resp.message(next_question)
 
     return str(resp)
-
-
-
 
 
 if __name__ == "__main__":
