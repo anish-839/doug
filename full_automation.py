@@ -603,7 +603,7 @@ if __name__ == "__main__":
     headers = {
         "accept": "application/json",
         "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-        "authorization": "Bearer ee262a9343f662dde109e07c58a00009e4ce9d0fa3e77730335aeb87e859ca7bd79b1e9e3a84a40c84e0cbbd2f97dbacb88621560117adca5bae1a3aede824e59a17aee72a82011ea53d0c0617a7e9a5246d2d0455debdb710590ac80d3350f7ecbf65d78842a0256ff35f28f00b63d62210f0ee46f961ea91ce560bf3773b64"
+        "authorization": f"Bearer {API_KEY}"
     }
 
     # Send the PUT request
@@ -618,5 +618,6 @@ if __name__ == "__main__":
     #get_job_applications(job_id)
     #save_job_description(job_title, job_description)
     #print(resume_text)
+
 
     #print(job_description)
