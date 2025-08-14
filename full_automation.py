@@ -7,6 +7,7 @@ import pdfplumber  # Add this library to extract text from PDFs
 from bs4 import BeautifulSoup
 from openai import OpenAI
 import json
+import sqlite3
 #import re
 
 import os, re, base64, tempfile
@@ -257,6 +258,7 @@ def search_person_by_name(name_or_email):
     
     for person in people:
         print(f"🔍 Checking person: {person['name']}")
+        print(f"Person object: {person}")
         
         # Get the phone number (assuming it's under 'phone_numbers' field)
         # phone_number = None
@@ -272,8 +274,28 @@ def search_person_by_name(name_or_email):
                 phone_number = phone_numbers[0].get('value') if phone_numbers else None
                 print(f"📱 Phone number: {phone_number}")
                 person_name = person.get('name')
+                
+                
                 return person_name, person_id, phone_number
     
+    return None
+
+def insert_candidate_for_automation(person_id, job_id, person_phone, candidate_name, resume_score):
+    # Connect to SQLite database
+    normalized_phone = normalize_phone_number(person_phone)
+    conn = sqlite3.connect('app.db')
+    cursor = conn.cursor()
+
+    # Insert candidate data into candidate_job_mapping table
+    cursor.execute('''
+    INSERT INTO candidate_job_mapping (person_id, job_id, person_phone, candidate_name, resume_score)
+    VALUES (?, ?, ?, ?, ?)
+    ''', (person_id, job_id, normalized_phone, candidate_name, resume_score))
+
+    # Commit the changes and close the connection
+    conn.commit()
+    conn.close()
+
     return None
 
 # Function to find job by title
@@ -438,6 +460,12 @@ Focus on:
             "summary": "Error occurred during evaluation"
         }
 
+#import re
+
+def normalize_phone_number(phone_number):
+    """Normalize the phone number by stripping out non-numeric characters."""
+    return ''.join(re.findall(r'\d', phone_number))  # Extracts only digits
+
 
 def send_whatsapp_message(to_number):
     """
@@ -451,7 +479,7 @@ def send_whatsapp_message(to_number):
     formatted_number = 'whatsapp:' + to_number.replace('-', '').replace(' ', '')
 
     message = twilio.messages.create(
-        body="Your Application was Submitted! Please be patient, your resume is being processed. The team will get in touch with you. If you have any further questions, please feel free to respond here.",
+        body="Your application has been submitted successfully! While we process your resume, we'd love to ask you a few quick follow-up questions. Is that okay?",
         from_=FROM_NUMBER,
         to=formatted_number
     )
@@ -485,6 +513,7 @@ def process_candidate_resume(job_id):
 
     # Send the resume text and job description to LLM for evaluation
     evaluation_result = evaluate_candidate_with_llm(resume_text, job_description)
+    #evaluation_result = "good"
     print(f"📝 Evaluation Result: {evaluation_result}")
 
     return job_description , evaluation_result
@@ -496,7 +525,7 @@ if __name__ == "__main__":
     #candidate_name_or_email = "Anish Patil" 
     #job_title = "Test Job"
 
-    query = 'subject:"New application for Test Job, Bow, NH" has:attachment newer_than:7d'
+    query = 'subject:[Action required] New application for" has:attachment newer_than:7d'
     # Set your folder here (Windows example). Create if it doesn't exist.
     download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
     result = fetch_application(query, download_dir=download_folder)
@@ -527,9 +556,31 @@ if __name__ == "__main__":
 
     
 
-    send_whatsapp_message(phone_number)
+    #send_whatsapp_message(phone_number)
 
+    url = f"https://app.loxo.co/api/bronwick-recruiting-and-staffing/people/{person_id}"
 
+    # Define the headers (same as before)
+    headers = {
+        "accept": "application/json",
+        "authorization": "Bearer ee262a9343f662dde109e07c58a00009e4ce9d0fa3e77730335aeb87e859ca7bd79b1e9e3a84a40c84e0cbbd2f97dbacb88621560117adca5bae1a3aede824e59a17aee72a82011ea53d0c0617a7e9a5246d2d0455debdb710590ac80d3350f7ecbf65d78842a0256ff35f28f00b63d62210f0ee46f961ea91ce560bf3773b64"
+    }
+
+    # Send the GET request to retrieve the person details
+    response = requests.get(url, headers=headers)
+
+    # Check if the response status code is successful (200)
+    if response.status_code == 200:
+        person_data = response.json()
+
+        # Extract the person's name and description
+        #person_name = person_data.get('name', 'N/A')
+        person_desc = person_data.get('description', '')
+
+        # If description exists, clean the HTML using BeautifulSoup
+        if person_desc:
+            person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
+    print(person_desc)
 
     print(f"🔍 Looking for job: {job_title}")
     job, job_id = find_job_by_title(job_title)
@@ -551,20 +602,22 @@ if __name__ == "__main__":
     #apply_for_job(job_id, person, EXPECTED_EMAIL, phone_number, resume_file)
 
     overall_score = evaluation_result['overall_score']
+    #overall_score = 85
 
     ah_pronoun = "AI Accepted" if overall_score > 60 else "AI Rejected"
 
-
+    insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
     
     
 
-    url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
-    #url = f"https://app.loxo.co/api/{agency_slug}/jobs/{job_id}/apply"
+    #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
+    url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
     files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
     payload = {
         "name": f"{person}",
         "phone": f"{phone_number}",
         "email": f"{EXPECTED_EMAIL}",
+        "source_type_id": "2028652",
         "pronoun_id": f"{overall_score}",
         "other_pronoun": f"{ah_pronoun}",
     }
@@ -578,27 +631,34 @@ if __name__ == "__main__":
     #print(response.text)
 
     
-
+    #summary = "The candidate demonstrates strong skills in Python and relevant experience with AI projects. While there are some gaps in specific AI frameworks and formal education, the candidate's hands-on experience and project work make them a good fit for an interview to further assess their potential for the AI Developer role"
     # Call the function to extract the email
+    summary = evaluation_result['summary']
     email_id = extract_email(resume_text)
     print(f"Extracted Email ID: {email_id}")
 
     #print(f"Extracted Email ID: apanishpatil839@gmail.com")
+    #desc = "Resume Score" + str(overall_score)
+    person_desc += f"\n\nSummary: {summary}\n\nOverall Score: {overall_score}" 
+    #person_description = f"{evaluation_result['summary']}\nOverall Score: {overall_score}"
 
+    print(person_desc)
     if overall_score > 60:
         ah_tag = "AI Accepted"
+        activity_type_id = 760300
     else:
         ah_tag = "AI Rejected"
+        activity_type_id = 760312
 
     
-
+    source_type_id = 429885
     #import requests
 
     url = f"https://app.loxo.co/api/bronwick-recruiting-and-staffing/people/{person_id}"
 
     # Create the payload with dynamic variables
-    payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001--"""
-
+    #payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001--"""
+    payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="source_type_id"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[source_type_id]"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001--"""
     # Define the headers
     headers = {
         "accept": "application/json",
@@ -612,12 +672,28 @@ if __name__ == "__main__":
     # Print the response text
     #print(response.text)
 
+    url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/person_events"
+
+    # Create the dynamic payload using f-string
+    payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[activity_type_id]"\r\n\r\n{activity_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[person_id]"\r\n\r\n{person_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[job_id]"\r\n\r\n{job_id}\r\n-----011000010111000001101001--"""
+
+    headers = {
+        "accept": "application/json",
+        "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+        "authorization": f"Bearer {API_KEY}"
+    }
+
+    # Send the POST request
+    response = requests.post(url, data=payload, headers=headers)
+
+    # Print the response text
+    print(response.text)
+
 
     #print(response.text)
 
     #get_job_applications(job_id)
     #save_job_description(job_title, job_description)
     #print(resume_text)
-
 
     #print(job_description)
