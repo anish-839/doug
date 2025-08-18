@@ -34,6 +34,8 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 twilio = Client(ACCOUNT_SID, AUTH_TOKEN)
 
+
+
 API_KEY = os.getenv("LOXO_API")
 AGENCY_SLUG = os.getenv("LOXO_AGENCY_SLUG")
 BASE = f"https://app.loxo.co/api/{AGENCY_SLUG}"
@@ -530,175 +532,179 @@ if __name__ == "__main__":
 
     # Fetch multiple applications
     results = fetch_application(query, download_dir=download_folder)
-
+    with open("automation_logs.txt", "w", encoding="utf-8") as f:
     # Loop through each result (email) and process it
-    for result in results:
-        try:
-            resume_path = result['resume_path']  # this is the real saved file path
-            if not resume_path or not os.path.exists(resume_path):
-                raise FileNotFoundError("Resume file not found")
+        for result in results:
+            try:
+                stream_name = result['candidate_name']
+                f.write(f"📧 Searching: {stream_name}\n")
+                resume_path = result['resume_path']  # this is the real saved file path
+                if not resume_path or not os.path.exists(resume_path):
+                    raise FileNotFoundError("Resume file not found")
 
-            resume_text = extract_text_from_pdf(resume_path)
-            
+                resume_text = extract_text_from_pdf(resume_path)
+                
 
-            #resume_text = extract_text_from_pdf("ANISH_PATIL_CV.pdf")
-            print(resume_text)
+                #resume_text = extract_text_from_pdf("ANISH_PATIL_CV.pdf")
+                print(resume_text)
 
-            EXPECTED_EMAIL = extract_email(resume_text)
-            print(EXPECTED_EMAIL)
+                EXPECTED_EMAIL = extract_email(resume_text)
+                print(EXPECTED_EMAIL)
+                f.write(" Fetched Resume Text and Found Email\n")
+                candidate_name_or_email = result['candidate_name'] 
+                
+                job_title = result['job_title']
 
-            candidate_name_or_email = result['candidate_name'] 
-            job_title = result['job_title']
+                print(f"🔍 Looking for candidate: {candidate_name_or_email}")
+                person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
+                if not person:
+                    print("❌ Candidate not found.")
+                    exit()
+                f.write("Found Person\n")
+                print(f"🔍 sending automated message to: {phone_number}")
 
-            print(f"🔍 Looking for candidate: {candidate_name_or_email}")
-            person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
-            if not person:
-                print("❌ Candidate not found.")
-                exit()
+                
 
-            print(f"🔍 sending automated message to: {phone_number}")
+                #send_whatsapp_message(phone_number)
+                f.write(" Sent Automated Text\n")
+                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
 
-            
+                # Define the headers (same as before)
+                headers = {
+                    "accept": "application/json",
+                    "authorization": f"Bearer {API_KEY}"
+                }
 
-            #send_whatsapp_message(phone_number)
+                # Send the GET request to retrieve the person details
+                response = requests.get(url, headers=headers)
 
-            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
+                # Check if the response status code is successful (200)
+                if response.status_code == 200:
+                    person_data = response.json()
 
-            # Define the headers (same as before)
-            headers = {
-                "accept": "application/json",
-                "authorization": f"Bearer {API_KEY}"
-            }
+                    # Extract the person's name and description
+                    #person_name = person_data.get('name', 'N/A')
+                    person_desc = person_data.get('description', '')
 
-            # Send the GET request to retrieve the person details
-            response = requests.get(url, headers=headers)
+                    # If description exists, clean the HTML using BeautifulSoup
+                    if person_desc:
+                        person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
+                print(person_desc)
 
-            # Check if the response status code is successful (200)
-            if response.status_code == 200:
-                person_data = response.json()
+                print(f"🔍 Looking for job: {job_title}")
+                job, job_id = find_job_by_title(job_title)
+                if not job:
+                    print("❌ Job not found.")
+                    exit()
+                f.write(" Found Matching Job\n")
+                #resume_id = 82078278  # Replace with the actual resume ID
+                print("🔗 Processing candidate's resume and job description...")
+                #job_description = process_candidate_resume(person_id, resume_id, job_id)
+                
+                job_description, evaluation_result = process_candidate_resume(job_id)
+                #print(resume_file)
+                print(job_id)
+                print(person)
+                #print(EXPECTED_EMAIL)
+                print(phone_number)
+                #apply_for_job(job_id, person, email, phone, resume_filename)
+                #apply_for_job(job_id, person, EXPECTED_EMAIL, phone_number, resume_file)
+                f.write(" Evaualated Candidate\n")
+                overall_score = evaluation_result['overall_score']
+                #overall_score = 85
 
-                # Extract the person's name and description
-                #person_name = person_data.get('name', 'N/A')
-                person_desc = person_data.get('description', '')
+                
 
-                # If description exists, clean the HTML using BeautifulSoup
-                if person_desc:
-                    person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
-            print(person_desc)
+                insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
+                
+                
 
-            print(f"🔍 Looking for job: {job_title}")
-            job, job_id = find_job_by_title(job_title)
-            if not job:
-                print("❌ Job not found.")
-                exit()
+                #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
+                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
+                files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
+                payload = {
+                    "name": f"{person}",
+                    "phone": f"{phone_number}",
+                    "email": f"{EXPECTED_EMAIL}",
+                    "source_type_id": "2028652",
+                }
+                headers = {
+                    "accept": "application/json",
+                    "authorization": f"Bearer {API_KEY}"
+                }
 
-            #resume_id = 82078278  # Replace with the actual resume ID
-            print("🔗 Processing candidate's resume and job description...")
-            #job_description = process_candidate_resume(person_id, resume_id, job_id)
-            
-            job_description, evaluation_result = process_candidate_resume(job_id)
-            #print(resume_file)
-            print(job_id)
-            print(person)
-            #print(EXPECTED_EMAIL)
-            print(phone_number)
-            #apply_for_job(job_id, person, email, phone, resume_filename)
-            #apply_for_job(job_id, person, EXPECTED_EMAIL, phone_number, resume_file)
+                response = requests.post(url, data=payload, files=files, headers=headers)
 
-            overall_score = evaluation_result['overall_score']
-            #overall_score = 85
+                #print(response.text)
+                f.write(" Candidated Added to Job\n")
+                
+                #summary = "The candidate demonstrates strong skills in Python and relevant experience with AI projects. While there are some gaps in specific AI frameworks and formal education, the candidate's hands-on experience and project work make them a good fit for an interview to further assess their potential for the AI Developer role"
+                # Call the function to extract the email
+                summary = evaluation_result['summary']
+                email_id = extract_email(resume_text)
+                print(f"Extracted Email ID: {email_id}")
 
-            
+                #print(f"Extracted Email ID: apanishpatil839@gmail.com")
+                #desc = "Resume Score" + str(overall_score)
+                person_desc += f"\n\nSummary: {summary}\n\nOverall Score: {overall_score}" 
+                #person_description = f"{evaluation_result['summary']}\nOverall Score: {overall_score}"
 
-            insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
-            
-            
+                print(person_desc)
+                f.write(f"Candidate Score: {overall_score}\n")
+                if overall_score > 60:
+                    ah_tag = "AI Accepted"
+                    activity_type_id = 760300
+                else:
+                    ah_tag = "AI Rejected"
+                    activity_type_id = 760312
 
-            #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
-            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
-            files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
-            payload = {
-                "name": f"{person}",
-                "phone": f"{phone_number}",
-                "email": f"{EXPECTED_EMAIL}",
-                "source_type_id": "2028652",
-            }
-            headers = {
-                "accept": "application/json",
-                "authorization": f"Bearer {API_KEY}"
-            }
+                
+                source_type_id = 429885
+                #import requests
 
-            response = requests.post(url, data=payload, files=files, headers=headers)
+                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
 
-            #print(response.text)
+                # Create the payload with dynamic variables
+                #payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001--"""
+                payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="source_type_id"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[source_type_id]"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001--"""
+                # Define the headers
+                headers = {
+                    "accept": "application/json",
+                    "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+                    "authorization": f"Bearer {API_KEY}"
+                }
 
-            
-            #summary = "The candidate demonstrates strong skills in Python and relevant experience with AI projects. While there are some gaps in specific AI frameworks and formal education, the candidate's hands-on experience and project work make them a good fit for an interview to further assess their potential for the AI Developer role"
-            # Call the function to extract the email
-            summary = evaluation_result['summary']
-            email_id = extract_email(resume_text)
-            print(f"Extracted Email ID: {email_id}")
+                # Send the PUT request
+                response = requests.put(url, data=payload, headers=headers)
 
-            #print(f"Extracted Email ID: apanishpatil839@gmail.com")
-            #desc = "Resume Score" + str(overall_score)
-            person_desc += f"\n\nSummary: {summary}\n\nOverall Score: {overall_score}" 
-            #person_description = f"{evaluation_result['summary']}\nOverall Score: {overall_score}"
+                # Print the response text
+                #print(response.text)
+                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/person_events"
 
-            print(person_desc)
-            if overall_score > 60:
-                ah_tag = "AI Accepted"
-                activity_type_id = 760300
-            else:
-                ah_tag = "AI Rejected"
-                activity_type_id = 760312
+                #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/person_events"
 
-            
-            source_type_id = 429885
-            #import requests
+                # Create the dynamic payload using f-string
+                payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[activity_type_id]"\r\n\r\n{activity_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[person_id]"\r\n\r\n{person_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[job_id]"\r\n\r\n{job_id}\r\n-----011000010111000001101001--"""
 
-            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
+                headers = {
+                    "accept": "application/json",
+                    "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+                    "authorization": f"Bearer {API_KEY}"
+                }
 
-            # Create the payload with dynamic variables
-            #payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001--"""
-            payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="source_type_id"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[source_type_id]"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001--"""
-            # Define the headers
-            headers = {
-                "accept": "application/json",
-                "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-                "authorization": f"Bearer {API_KEY}"
-            }
+                # Send the POST request
+                response = requests.post(url, data=payload, headers=headers)
 
-            # Send the PUT request
-            response = requests.put(url, data=payload, headers=headers)
+                # Print the response text
+                print(response.text)
 
-            # Print the response text
-            #print(response.text)
-            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/person_events"
+                f.write(" Automation Completed Sucessfully, starting next person...\n")
+                #print(response.text)
 
-            #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/person_events"
+                #get_job_applications(job_id)
+                #save_job_description(job_title, job_description)
+                #print(resume_text)
 
-            # Create the dynamic payload using f-string
-            payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[activity_type_id]"\r\n\r\n{activity_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[person_id]"\r\n\r\n{person_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[job_id]"\r\n\r\n{job_id}\r\n-----011000010111000001101001--"""
-
-            headers = {
-                "accept": "application/json",
-                "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-                "authorization": f"Bearer {API_KEY}"
-            }
-
-            # Send the POST request
-            response = requests.post(url, data=payload, headers=headers)
-
-            # Print the response text
-            print(response.text)
-
-
-            #print(response.text)
-
-            #get_job_applications(job_id)
-            #save_job_description(job_title, job_description)
-            #print(resume_text)
-
-            #print(job_description)
-        except Exception as e:
-            print(f"Error processing application: {e}")
+                #print(job_description)
+            except Exception as e:
+                print(f"Error processing application: {e}")
