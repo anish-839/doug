@@ -28,7 +28,7 @@ AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
 # Twilio Sandbox WhatsApp number (DO NOT change this)
 FROM_NUMBER = 'whatsapp:+14155238886'  # Always this for sandbox
-
+TWILIO_NUMBER='+17755102353'
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Make sure the variable name matches your .env
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -106,37 +106,50 @@ def _get_html_and_text(payload) -> Tuple[Optional[str], Optional[str]]:
             text = raw
     return html, text
 
-def _parse_name_and_title(html: Optional[str], text: Optional[str], subject: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_name_and_title(html: Optional[str], text: Optional[str], subject: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     def parse_lines(lines):
         cand, title = None, None
         for i, line in enumerate(lines):
             if line.lower().endswith("applied"):
-                cand = line[: -len("applied")].strip()
+                # strip trailing separators before "applied"
+                cand = line[: -len("applied")].strip(" -•,").strip()
                 if i + 1 < len(lines):
                     nxt = lines[i + 1]
-                    title = re.split(r"[•,|-]", nxt)[0].strip()
+                    # split on common separators after the name line
+                    title = re.split(r"[•,|\-–—]", nxt)[0].strip()
                 break
         return cand, title
 
+    # Extract state code from subject: take the final ", XX"
+    state_code = None
+    if subject:
+        m_state = re.search(r",\s*([A-Za-z]{2})\s*$", subject.strip())
+        if m_state:
+            state_code = m_state.group(1).upper()
+
+    # Try HTML first
     if html:
         soup = BeautifulSoup(html, "html.parser")
         lines = [l.strip() for l in soup.get_text("\n").splitlines() if l.strip()]
         cand, title = parse_lines(lines)
         if cand or title:
-            return cand, title
+            return cand, title, state_code
 
+    # Fallback to plain text
     if text:
         lines = [l.strip() for l in text.splitlines() if l.strip()]
         cand, title = parse_lines(lines)
         if cand or title:
-            return cand, title
+            return cand, title, state_code
 
+    # Final fallback: derive job title from subject
     jt = None
-    m = re.search(r"New application for\s*(.*?)(?:,|$)", subject, re.I)
-    if m:
-        jt = m.group(1).strip()
+    if subject:
+        m = re.search(r"New application for\s*(.*?)(?:,|$)", subject, re.I)
+        if m:
+            jt = m.group(1).strip()
 
-    return None, jt
+    return None, jt, state_code
 
 def _safe_filename(name: str) -> str:
     # keep alnum, dot, dash, underscore, space
@@ -193,6 +206,26 @@ def _download_first_resume_attachment(service, msg, download_dir: Optional[str] 
 
 # ---------- Public function ----------
 
+def send_sms_message(to_number):
+    """
+    Sends an SMS using the Twilio API.
+
+    :param to_number: The recipient's verified phone number (in the format: '+91-9833944247')
+    :return: SID of the sent message
+    """
+    
+    # Remove hyphens and format the number correctly
+    formatted_number = to_number.replace('-', '').replace(' ', '')
+
+    message = twilio.messages.create(
+        body="Your application has been submitted successfully! We are currently processing your resume, and our team will get in touch with you soon.",
+        from_=TWILIO_NUMBER,
+        to=formatted_number
+    )
+    print(f"✅ SMS message sent. SID: {message.sid}")
+    return message.sid
+
+
 
 def extract_text_from_pdf(pdf_file):
     try:
@@ -230,7 +263,7 @@ def fetch_application(query: str, download_dir: Optional[str] = None):
         msg_detail = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
         subject = _get_subject(msg_detail)
         html, text = _get_html_and_text(msg_detail.get("payload", {}))
-        candidate_name, job_title = _parse_name_and_title(html, text, subject)
+        candidate_name, job_title, state_code = _parse_name_and_title(html, text, subject)
         resume_path, resume_filename = _download_first_resume_attachment(service, msg_detail, download_dir)
 
         result = {
@@ -239,9 +272,12 @@ def fetch_application(query: str, download_dir: Optional[str] = None):
             'resume_path': resume_path,
             'resume_filename': resume_filename,
             'message_id': msg_detail.get('id'),
-            'subject': subject
+            'subject': subject,
+            'state_code': state_code
         }
         results.append(result)
+
+        print(results)
 
     return results
 
@@ -308,7 +344,7 @@ def insert_candidate_for_automation(person_id, job_id, person_phone, candidate_n
     return None
 
 # Function to find job by title
-def find_job_by_title(title):
+def find_job_by_title(title, state_code):
     url = f"{BASE}/jobs?query={title}&per_page=5&page=1"
     print(f"🔍 Hitting: {url}")
     resp = requests.get(url, headers=HEADERS)
@@ -328,7 +364,7 @@ def find_job_by_title(title):
     for job in jobs:
         print(f"🔍 Checking job: {job['title']}")
         
-        if title.lower() in job.get("title", "").lower():
+        if title.lower() in job.get("title", "").lower() and state_code.upper() in job.get("state_code", "").upper():
             print(f"✅ Found matching job: {job['title']}")
             job_id = job.get('id')
             return job, job_id
@@ -527,7 +563,7 @@ def process_candidate_resume(job_id):
 
 # Example usage
 if __name__ == "__main__":
-    query = 'subject:[Action required] New application for" has:attachment newer_than:7d'
+    query = 'subject:[Action required] New application for" has:attachment newer_than:20d'
     download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
 
     # Fetch multiple applications
@@ -554,6 +590,7 @@ if __name__ == "__main__":
                 candidate_name_or_email = result['candidate_name'] 
                 
                 job_title = result['job_title']
+                state_code = result['state_code']
 
                 print(f"🔍 Looking for candidate: {candidate_name_or_email}")
                 person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
@@ -561,6 +598,7 @@ if __name__ == "__main__":
                     print("❌ Candidate not found.")
                     exit()
                 f.write("Found Person\n")
+                send_sms_message(phone_number)
                 print(f"🔍 sending automated message to: {phone_number}")
 
                 
@@ -592,7 +630,7 @@ if __name__ == "__main__":
                 print(person_desc)
 
                 print(f"🔍 Looking for job: {job_title}")
-                job, job_id = find_job_by_title(job_title)
+                job, job_id = find_job_by_title(job_title, state_code)
                 if not job:
                     print("❌ Job not found.")
                     exit()
@@ -678,7 +716,7 @@ if __name__ == "__main__":
                 response = requests.put(url, data=payload, headers=headers)
 
                 # Print the response text
-                #print(response.text)
+                print(response.text)
                 url = f"https://app.loxo.co/api/{AGENCY_SLUG}/person_events"
 
                 #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/person_events"
