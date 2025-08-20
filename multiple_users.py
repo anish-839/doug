@@ -668,7 +668,8 @@ if __name__ == "__main__":
             
             # Updated query to exclude processed emails and fetch more
             query = 'subject:"[Action required] New application for" has:attachment -label:processed newer_than:20d'
-            download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
+            #download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
+            download_folder = os.path.join(os.path.dirname(__file__), 'resume')
 
             # Fetch 50-60 applications
             results = fetch_application(query, download_dir=download_folder)
@@ -704,7 +705,7 @@ if __name__ == "__main__":
 
                             resume_text = extract_text_from_pdf(resume_path)
                             print(resume_text)
-
+                            
                             """expected mail is extracted from resume text which is matched on loxo to identify the correct candidate """
 
                             EXPECTED_EMAIL = extract_email(resume_text)
@@ -776,7 +777,7 @@ if __name__ == "__main__":
                             
                             """passes job description extracted from job id and resume text to llm for evualation which returns a json format result"""
 
-                            insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
+                            #insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
                             """ adds the person to job """
 
                             url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
@@ -794,6 +795,11 @@ if __name__ == "__main__":
 
                             response = requests.post(url, data=payload, files=files, headers=headers)
                             f.write("✓ Candidate Added to Job\n")
+                            if os.path.exists(resume_path):
+                                os.remove(resume_path)
+                                print(f"✅ Deleted the resume file: {resume_path}")
+                            else:
+                                print(f"❌ Resume file not found: {resume_path}")
                             time.sleep(5)
                             summary = evaluation_result['summary']
                             email_id = extract_email(resume_text)
