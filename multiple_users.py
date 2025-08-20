@@ -10,6 +10,11 @@ from openai import OpenAI
 import json
 import sqlite3
 #import re
+from datetime import datetime, timedelta
+from typing import Optional
+
+
+
 
 import os, re, base64, tempfile
 from typing import Tuple, Optional, Dict, Any
@@ -47,7 +52,7 @@ HEADERS = {
 
 #EXPECTED_EMAIL = "runningoutofuniqueemail@gmail.com"  # Hardcoded for now
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 # ---------- OAuth / Service ----------
 
@@ -204,6 +209,65 @@ def _download_first_resume_attachment(service, msg, download_dir: Optional[str] 
         return path, filename
     return None, None
 
+PROCESSED_EMAILS_FILE = "processed_emails.json"
+
+def load_processed_emails():
+    """Load list of processed email IDs from JSON file"""
+    try:
+        if os.path.exists(PROCESSED_EMAILS_FILE):
+            with open(PROCESSED_EMAILS_FILE, 'r') as f:
+                return set(json.load(f))
+        return set()
+    except Exception as e:
+        print(f"Error loading processed emails: {e}")
+        return set()
+
+def save_processed_emails(processed_set):
+    """Save processed email IDs to JSON file"""
+    try:
+        with open(PROCESSED_EMAILS_FILE, 'w') as f:
+            json.dump(list(processed_set), f)
+    except Exception as e:
+        print(f"Error saving processed emails: {e}")
+
+def mark_email_as_processed_in_gmail(service, message_id):
+    """Add 'processed' label to email in Gmail"""
+    try:
+        # First, get or create the 'processed' label
+        labels = service.users().labels().list(userId='me').execute()
+        processed_label_id = None
+        
+        for label in labels.get('labels', []):
+            if label['name'].lower() == 'processed':
+                processed_label_id = label['id']
+                break
+        
+        # Create label if it doesn't exist
+        if not processed_label_id:
+            label_object = {
+                'name': 'processed',
+                'messageListVisibility': 'show',
+                'labelListVisibility': 'labelShow'
+            }
+            created_label = service.users().labels().create(userId='me', body=label_object).execute()
+            processed_label_id = created_label['id']
+        
+        # Add the label to the message
+        modify_request = {
+            'addLabelIds': [processed_label_id]
+        }
+        
+        service.users().messages().modify(
+            userId='me', 
+            id=message_id, 
+            body=modify_request
+        ).execute()
+        
+        print(f"✅ Marked email {message_id} as processed in Gmail")
+        
+    except Exception as e:
+        print(f"❌ Error marking email as processed in Gmail: {e}")
+
 # ---------- Public function ----------
 
 def send_sms_message(to_number):
@@ -218,7 +282,7 @@ def send_sms_message(to_number):
     formatted_number = to_number.replace('-', '').replace(' ', '')
 
     message = twilio.messages.create(
-        body="Your application has been submitted successfully! We are currently processing your resume, and our team will get in touch with you soon.",
+        body="Your application has been submitted successfully! While we process your resume, we'd love to ask you a few quick follow-up questions. Is that okay?",
         from_=TWILIO_NUMBER,
         to=formatted_number
     )
@@ -240,45 +304,61 @@ def extract_text_from_pdf(pdf_file):
 
 def fetch_application(query: str, download_dir: Optional[str] = None):
     """
-    Fetch multiple emails that match the query and return them as a list of dictionaries.
-    Each dictionary contains:
-    - 'candidate_name': str|None
-    - 'job_title': str|None
-    - 'resume_path': str|None
-    - 'resume_filename': str|None
-    - 'message_id': str|None
-    - 'subject': str
-
-    Returns:
-        list: A list of dictionaries for each email that matches the query.
+    Enhanced fetch_application function to handle more emails and track processed ones
     """
     service = get_gmail_service()
-
-    # Fetch multiple emails matching the query (you can increase maxResults for more emails)
-    resp = service.users().messages().list(userId="me", q=query, maxResults=10).execute()  # Increased maxResults
+    
+    # Load processed emails from JSON
+    processed_emails = load_processed_emails()
+    
+    # Fetch more emails (50-60)
+    resp = service.users().messages().list(userId="me", q=query, maxResults=60).execute()
     msgs = resp.get("messages", [])
+    
+    print(f"📧 Gmail returned {len(msgs)} emails")
 
     results = []
+    newly_processed_ids = set()
+    
     for msg in msgs:
-        msg_detail = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-        subject = _get_subject(msg_detail)
-        html, text = _get_html_and_text(msg_detail.get("payload", {}))
-        candidate_name, job_title, state_code = _parse_name_and_title(html, text, subject)
-        resume_path, resume_filename = _download_first_resume_attachment(service, msg_detail, download_dir)
+        message_id = msg["id"]
+        
+        # Skip if we've already processed this email
+        if message_id in processed_emails:
+            continue
+            
+        try:
+            msg_detail = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+            subject = _get_subject(msg_detail)
+            html, text = _get_html_and_text(msg_detail.get("payload", {}))
+            candidate_name, job_title, state_code = _parse_name_and_title(html, text, subject)
+            resume_path, resume_filename = _download_first_resume_attachment(service, msg_detail, download_dir)
 
-        result = {
-            'candidate_name': candidate_name,
-            'job_title': job_title,
-            'resume_path': resume_path,
-            'resume_filename': resume_filename,
-            'message_id': msg_detail.get('id'),
-            'subject': subject,
-            'state_code': state_code
-        }
-        results.append(result)
+            result = {
+                'candidate_name': candidate_name,
+                'job_title': job_title,
+                'resume_path': resume_path,
+                'resume_filename': resume_filename,
+                'message_id': message_id,
+                'subject': subject,
+                'state_code': state_code,
+                'fetched_at': datetime.now().isoformat()
+            }
+            results.append(result)
+            newly_processed_ids.add(message_id)
+            
+        except Exception as e:
+            print(f"❌ Error fetching email {message_id}: {e}")
+            # Mark as processed even if failed to avoid retry loops
+            newly_processed_ids.add(message_id)
 
-        print(results)
+    # Update processed emails list
+    if newly_processed_ids:
+        all_processed = processed_emails.union(newly_processed_ids)
+        save_processed_emails(all_processed)
+        print(f"💾 Saved {len(newly_processed_ids)} new processed email IDs")
 
+    print(f"📊 New emails to process: {len(results)}")
     return results
 
 
@@ -563,186 +643,225 @@ def process_candidate_resume(job_id):
 
 # Example usage
 if __name__ == "__main__":
-    query = 'subject:[Action required] New application for" has:attachment newer_than:20d'
-    download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
+    print("Choose automation mode:")
+    print("1. Run once (process current emails)")
+    print("2. Run continuously (every 10 minutes)")
+    
+    choice = input("Enter choice (1 or 2): ").strip()
+    
+    if choice == "2":
+        print("🚀 Starting continuous email automation...")
+        print("⏰ Will check for new emails every 10 minutes")
+        print("🛑 Press Ctrl+C to stop")
+    
+    cycle_count = 0
 
-    # Fetch multiple applications
-    results = fetch_application(query, download_dir=download_folder)
-    with open("automation_logs.txt", "w", encoding="utf-8") as f:
-    # Loop through each result (email) and process it
-        for result in results:
-            try:
-                stream_name = result['candidate_name']
-                f.write(f"📧 Searching: {stream_name}\n")
-                resume_path = result['resume_path']  # this is the real saved file path
-                if not resume_path or not os.path.exists(resume_path):
-                    raise FileNotFoundError("Resume file not found")
+    # if choice == 1, we start are automation of th fetched mail and break the while true loop at then end 
+    # if choice == 2 , we stay in infinite while loop which waits 10 mins for next cycle to fetch new mails
+    
+    try:
+        while True:
+            cycle_count += 1
+            print(f"\n{'='*60}")
+            print(f"🔄 Starting cycle #{cycle_count} at {datetime.now()}")
+            print(f"{'='*60}")
+            
+            # Updated query to exclude processed emails and fetch more
+            query = 'subject:"[Action required] New application for" has:attachment -label:processed newer_than:20d'
+            download_folder = r"C:\Users\LENOVO\Desktop\work_please\resume"
 
-                resume_text = extract_text_from_pdf(resume_path)
+            # Fetch 50-60 applications
+            results = fetch_application(query, download_dir=download_folder)
+            
+            if not results:
+                print("📭 No new applications found.")
+            else:
+                print(f"📧 Found {len(results)} new applications to process")
                 
-
-                #resume_text = extract_text_from_pdf("ANISH_PATIL_CV.pdf")
-                print(resume_text)
-
-                EXPECTED_EMAIL = extract_email(resume_text)
-                print(EXPECTED_EMAIL)
-                f.write(" Fetched Resume Text and Found Email\n")
-                candidate_name_or_email = result['candidate_name'] 
+                successful = 0
+                failed = 0
                 
-                job_title = result['job_title']
-                state_code = result['state_code']
+                with open("automation_logs.txt", "a", encoding="utf-8") as f:
+                    f.write(f"\n{'='*50}\n")
+                    f.write(f"🕐 Cycle #{cycle_count} started at: {datetime.now()}\n")
+                    f.write(f"📧 Processing {len(results)} applications\n")
+                    f.write(f"{'='*50}\n")
+                    
+                    # YOUR EXISTING LOGIC STARTS HERE - exactly as you had it
+                    for i, result in enumerate(results, 1):
+                        try:
+                            print(f"\n📊 Processing {i}/{len(results)}: {result['candidate_name']}")
+                            
+                            stream_name = result['candidate_name']
+                            message_id = result['message_id']
+                            f.write(f"📧 Processing {i}/{len(results)}: {stream_name}\n")
+                            
+                            resume_path = result['resume_path']
+                            if not resume_path or not os.path.exists(resume_path):
+                                raise FileNotFoundError("Resume file not found")
 
-                print(f"🔍 Looking for candidate: {candidate_name_or_email}")
-                person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
-                if not person:
-                    print("❌ Candidate not found.")
-                    exit()
-                f.write("Found Person\n")
-                send_sms_message(phone_number)
-                print(f"🔍 sending automated message to: {phone_number}")
+                            resume_text = extract_text_from_pdf(resume_path)
+                            print(resume_text)
 
-                
+                            EXPECTED_EMAIL = extract_email(resume_text)
+                            print(EXPECTED_EMAIL)
+                            f.write("✓ Fetched Resume Text and Found Email\n")
+                            
+                            candidate_name_or_email = result['candidate_name'] 
+                            job_title = result['job_title']
+                            state_code = result['state_code']
 
-                #send_whatsapp_message(phone_number)
-                f.write(" Sent Automated Text\n")
-                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
+                            print(f"🔍 Looking for candidate: {candidate_name_or_email}")
+                            person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
+                            if not person:
+                                print("❌ Candidate not found.")
+                                f.write("❌ Candidate not found, skipping...\n")
+                                failed += 1
+                                continue  # Changed from exit() to continue
+                                
+                            f.write("✓ Found Person\n")
+                            send_sms_message(phone_number)
+                            print(f"📱 Sending automated message to: {phone_number}")
 
-                # Define the headers (same as before)
-                headers = {
-                    "accept": "application/json",
-                    "authorization": f"Bearer {API_KEY}"
-                }
+                            f.write("✓ Sent Automated Text\n")
+                            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
 
-                # Send the GET request to retrieve the person details
-                response = requests.get(url, headers=headers)
+                            headers = {
+                                "accept": "application/json",
+                                "authorization": f"Bearer {API_KEY}"
+                            }
 
-                # Check if the response status code is successful (200)
-                if response.status_code == 200:
-                    person_data = response.json()
+                            response = requests.get(url, headers=headers)
 
-                    # Extract the person's name and description
-                    #person_name = person_data.get('name', 'N/A')
-                    person_desc = person_data.get('description', '')
+                            if response.status_code == 200:
+                                person_data = response.json()
+                                person_desc = person_data.get('description', '')
+                                if person_desc:
+                                    person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
+                            else:
+                                person_desc = ""
 
-                    # If description exists, clean the HTML using BeautifulSoup
-                    if person_desc:
-                        person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
-                print(person_desc)
+                            print(person_desc)
 
-                print(f"🔍 Looking for job: {job_title}")
-                job, job_id = find_job_by_title(job_title, state_code)
-                if not job:
-                    print("❌ Job not found.")
-                    exit()
-                f.write(" Found Matching Job\n")
-                #resume_id = 82078278  # Replace with the actual resume ID
-                print("🔗 Processing candidate's resume and job description...")
-                #job_description = process_candidate_resume(person_id, resume_id, job_id)
-                
-                job_description, evaluation_result = process_candidate_resume(job_id)
-                #print(resume_file)
-                print(job_id)
-                print(person)
-                #print(EXPECTED_EMAIL)
-                print(phone_number)
-                #apply_for_job(job_id, person, email, phone, resume_filename)
-                #apply_for_job(job_id, person, EXPECTED_EMAIL, phone_number, resume_file)
-                f.write(" Evaualated Candidate\n")
-                overall_score = evaluation_result['overall_score']
-                #overall_score = 85
+                            print(f"🔍 Looking for job: {job_title}")
+                            job, job_id = find_job_by_title(job_title, state_code)
+                            if not job:
+                                print("❌ Job not found.")
+                                f.write("❌ Job not found, skipping...\n")
+                                failed += 1
+                                continue  # Changed from exit() to continue
+                                
+                            f.write("✓ Found Matching Job\n")
+                            
+                            print("🔗 Processing candidate's resume and job description...")
+                            job_description, evaluation_result = process_candidate_resume(job_id)
+                            
+                            print(job_id)
+                            print(person)
+                            print(phone_number)
+                            f.write("✓ Evaluated Candidate\n")
+                            
+                            overall_score = evaluation_result['overall_score']
+                            
+                            insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
+                            
+                            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
+                            files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
+                            payload = {
+                                "name": f"{person}",
+                                "phone": f"{phone_number}",
+                                "email": f"{EXPECTED_EMAIL}",
+                                "source_type_id": "2028652",
+                            }
+                            headers = {
+                                "accept": "application/json",
+                                "authorization": f"Bearer {API_KEY}"
+                            }
 
-                
+                            response = requests.post(url, data=payload, files=files, headers=headers)
+                            f.write("✓ Candidate Added to Job\n")
+                            time.sleep(5)
+                            summary = evaluation_result['summary']
+                            email_id = extract_email(resume_text)
+                            print(f"Extracted Email ID: {email_id}")
 
-                insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
-                
-                
+                            if person_desc is None:
+                                person_desc = ""  # Ensure it's initialized as an empty string
 
-                #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/jobs/3372115/apply"
-                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
-                files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
-                payload = {
-                    "name": f"{person}",
-                    "phone": f"{phone_number}",
-                    "email": f"{EXPECTED_EMAIL}",
-                    "source_type_id": "2028652",
-                }
-                headers = {
-                    "accept": "application/json",
-                    "authorization": f"Bearer {API_KEY}"
-                }
+                            person_desc += f"\n\nSummary: {summary}\n\nOverall Score: {overall_score}" 
 
-                response = requests.post(url, data=payload, files=files, headers=headers)
+                            print(person_desc)
+                            f.write(f"Candidate Score: {overall_score}\n")
+                            
+                            if overall_score > 60:
+                                ah_tag = "AI Accepted"
+                                activity_type_id = 760300
+                            else:
+                                ah_tag = "AI Rejected"
+                                activity_type_id = 760312
 
-                #print(response.text)
-                f.write(" Candidated Added to Job\n")
-                
-                #summary = "The candidate demonstrates strong skills in Python and relevant experience with AI projects. While there are some gaps in specific AI frameworks and formal education, the candidate's hands-on experience and project work make them a good fit for an interview to further assess their potential for the AI Developer role"
-                # Call the function to extract the email
-                summary = evaluation_result['summary']
-                email_id = extract_email(resume_text)
-                print(f"Extracted Email ID: {email_id}")
+                            source_type_id = 429885
+                            time.sleep(5)
+                            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
+                            payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="source_type_id"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[source_type_id]"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001--"""
+                            
+                            headers = {
+                                "accept": "application/json",
+                                "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+                                "authorization": f"Bearer {API_KEY}"
+                            }
 
-                #print(f"Extracted Email ID: apanishpatil839@gmail.com")
-                #desc = "Resume Score" + str(overall_score)
-                person_desc += f"\n\nSummary: {summary}\n\nOverall Score: {overall_score}" 
-                #person_description = f"{evaluation_result['summary']}\nOverall Score: {overall_score}"
+                            response = requests.put(url, data=payload, headers=headers)
+                            print(response)
+                            time.sleep(5)
+                            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/person_events"
+                            payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[activity_type_id]"\r\n\r\n{activity_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[person_id]"\r\n\r\n{person_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[job_id]"\r\n\r\n{job_id}\r\n-----011000010111000001101001--"""
 
-                print(person_desc)
-                f.write(f"Candidate Score: {overall_score}\n")
-                if overall_score > 60:
-                    ah_tag = "AI Accepted"
-                    activity_type_id = 760300
-                else:
-                    ah_tag = "AI Rejected"
-                    activity_type_id = 760312
+                            headers = {
+                                "accept": "application/json",
+                                "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+                                "authorization": f"Bearer {API_KEY}"
+                            }
 
-                
-                source_type_id = 429885
-                #import requests
+                            response = requests.post(url, data=payload, headers=headers)
+                            
+                            # Mark email as processed in Gmail
+                            mark_email_as_processed_in_gmail(get_gmail_service(), message_id)
+                            
+                            f.write(f"✅ Automation Completed Successfully for {stream_name} (Score: {overall_score})\n")
+                            f.flush()
+                            
+                            print(f"✅ Successfully processed: {stream_name} (Score: {overall_score})")
+                            successful += 1
 
-                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
-
-                # Create the payload with dynamic variables
-                #payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001--"""
-                payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="source_type_id"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[source_type_id]"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001--"""
-                # Define the headers
-                headers = {
-                    "accept": "application/json",
-                    "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-                    "authorization": f"Bearer {API_KEY}"
-                }
-
-                # Send the PUT request
-                response = requests.put(url, data=payload, headers=headers)
-
-                # Print the response text
-                print(response.text)
-                url = f"https://app.loxo.co/api/{AGENCY_SLUG}/person_events"
-
-                #url = "https://app.loxo.co/api/bronwick-recruiting-and-staffing/person_events"
-
-                # Create the dynamic payload using f-string
-                payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[activity_type_id]"\r\n\r\n{activity_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[person_id]"\r\n\r\n{person_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[job_id]"\r\n\r\n{job_id}\r\n-----011000010111000001101001--"""
-
-                headers = {
-                    "accept": "application/json",
-                    "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-                    "authorization": f"Bearer {API_KEY}"
-                }
-
-                # Send the POST request
-                response = requests.post(url, data=payload, headers=headers)
-
-                # Print the response text
-                print(response.text)
-
-                f.write(" Automation Completed Sucessfully, starting next person...\n")
-                #print(response.text)
-
-                #get_job_applications(job_id)
-                #save_job_description(job_title, job_description)
-                #print(resume_text)
-
-                #print(job_description)
-            except Exception as e:
-                print(f"Error processing application: {e}")
+                        except Exception as e:
+                            f.write(f"❌ Error processing {result.get('candidate_name', 'Unknown')}: {str(e)}\n")
+                            f.flush()
+                            print(f"❌ Error processing application for {result.get('candidate_name', 'Unknown')}: {e}")
+                            failed += 1
+                        
+                        # Small delay between applications
+                        time.sleep(10)
+                    
+                    # Write cycle summary
+                    f.write(f"\n{'='*50}\n")
+                    f.write(f"✅ Cycle #{cycle_count} completed at: {datetime.now()}\n")
+                    f.write(f"📊 Results: {successful} successful, {failed} failed\n")
+                    f.write(f"{'='*50}\n\n")
+            
+            print(f"\n✅ Cycle #{cycle_count} completed!")
+            print(f"📊 Results: {successful} successful, {failed} failed")
+            
+            if choice == "1":
+                break  # Exit after one cycle for single run
+            
+            print(f"⏰ Waiting 10 minutes before next cycle...")
+            print(f"💤 Next cycle will start at: {(datetime.now() + timedelta(minutes=10)).strftime('%H:%M:%S')}")
+            
+            # Wait 10 minutes (600 seconds)
+            time.sleep(120)
+            
+    except KeyboardInterrupt:
+        print("\n🛑 Automation stopped by user")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
