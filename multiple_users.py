@@ -696,12 +696,16 @@ if __name__ == "__main__":
                             message_id = result['message_id']
                             f.write(f"📧 Processing {i}/{len(results)}: {stream_name}\n")
                             
+                            """we fetch candidate name, job title , job state code, and download resume from mail """
+
                             resume_path = result['resume_path']
                             if not resume_path or not os.path.exists(resume_path):
                                 raise FileNotFoundError("Resume file not found")
 
                             resume_text = extract_text_from_pdf(resume_path)
                             print(resume_text)
+
+                            """expected mail is extracted from resume text which is matched on loxo to identify the correct candidate """
 
                             EXPECTED_EMAIL = extract_email(resume_text)
                             print(EXPECTED_EMAIL)
@@ -710,6 +714,8 @@ if __name__ == "__main__":
                             candidate_name_or_email = result['candidate_name'] 
                             job_title = result['job_title']
                             state_code = result['state_code']
+
+                            """finds the candidate on loxo by providing name and email"""
 
                             print(f"🔍 Looking for candidate: {candidate_name_or_email}")
                             person, person_id, phone_number = search_person_by_name(candidate_name_or_email)
@@ -724,6 +730,9 @@ if __name__ == "__main__":
                             print(f"📱 Sending automated message to: {phone_number}")
 
                             f.write("✓ Sent Automated Text\n")
+
+                            """Finds person document from the perosn id fetched above"""
+
                             url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
 
                             headers = {
@@ -742,6 +751,8 @@ if __name__ == "__main__":
                                 person_desc = ""
 
                             print(person_desc)
+
+                            """Finds job id by searching job title and matching with state code extracted from mail"""
 
                             print(f"🔍 Looking for job: {job_title}")
                             job, job_id = find_job_by_title(job_title, state_code)
@@ -763,8 +774,11 @@ if __name__ == "__main__":
                             
                             overall_score = evaluation_result['overall_score']
                             
+                            """passes job description extracted from job id and resume text to llm for evualation which returns a json format result"""
+
                             insert_candidate_for_automation(person_id, job_id, phone_number, person, overall_score)
-                            
+                            """ adds the person to job """
+
                             url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
                             files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
                             payload = {
@@ -790,6 +804,8 @@ if __name__ == "__main__":
 
                             person_desc += f"\n\nSummary: {summary}\n\nOverall Score: {overall_score}" 
 
+                            """person description is appended along with llm summary an overall score and passed as string to our api call"""
+
                             print(person_desc)
                             f.write(f"Candidate Score: {overall_score}\n")
                             
@@ -802,6 +818,9 @@ if __name__ == "__main__":
 
                             source_type_id = 429885
                             time.sleep(5)
+
+                            """the person added to job (which is in applied stage rn), we add a tag, soruce id, and person description"""
+
                             url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
                             payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="source_type_id"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[raw_tags][]"\r\n\r\n{ah_tag}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[source_type_id]"\r\n\r\n{source_type_id}\r\n-----011000010111000001101001--"""
                             
@@ -814,6 +833,9 @@ if __name__ == "__main__":
                             response = requests.put(url, data=payload, headers=headers)
                             print(response)
                             time.sleep(5)
+
+                            """moves a person from one position to another based on the overall score by calling a trigger (no it cant be done in the same api call)"""
+
                             url = f"https://app.loxo.co/api/{AGENCY_SLUG}/person_events"
                             payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[activity_type_id]"\r\n\r\n{activity_type_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[person_id]"\r\n\r\n{person_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person_event[job_id]"\r\n\r\n{job_id}\r\n-----011000010111000001101001--"""
 
@@ -826,6 +848,9 @@ if __name__ == "__main__":
                             response = requests.post(url, data=payload, headers=headers)
                             
                             # Mark email as processed in Gmail
+
+                            """adds a processed tag in gmail so we dont fetch the same mail again"""
+
                             mark_email_as_processed_in_gmail(get_gmail_service(), message_id)
                             
                             f.write(f"✅ Automation Completed Successfully for {stream_name} (Score: {overall_score})\n")
@@ -861,6 +886,8 @@ if __name__ == "__main__":
             # Wait 10 minutes (600 seconds)
             time.sleep(120)
             
+            """since while loop is not broken the next cycle is started after the above time"""
+
     except KeyboardInterrupt:
         print("\n🛑 Automation stopped by user")
     except Exception as e:
