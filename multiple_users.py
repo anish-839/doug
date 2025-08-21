@@ -209,18 +209,7 @@ def _download_first_resume_attachment(service, msg, download_dir: Optional[str] 
         return path, filename
     return None, None
 
-PROCESSED_EMAILS_FILE = "processed_emails.json"
 
-def load_processed_emails():
-    """Load list of processed email IDs from JSON file"""
-    try:
-        if os.path.exists(PROCESSED_EMAILS_FILE):
-            with open(PROCESSED_EMAILS_FILE, 'r') as f:
-                return set(json.load(f))
-        return set()
-    except Exception as e:
-        print(f"Error loading processed emails: {e}")
-        return set()
 
 def save_processed_emails(processed_set):
     """Save processed email IDs to JSON file"""
@@ -302,30 +291,22 @@ def extract_text_from_pdf(pdf_file):
         print(f"❌ Failed to extract text from PDF. Error: {e}")
         return None
 
-def fetch_application(query: str, download_dir: Optional[str] = None):
+def fetch_application(query: str, download_dir: Optional[str] = None, max_results: int = 60):
     """
-    Enhanced fetch_application function to handle more emails and track processed ones
+    Simplified version - just fetch emails, Gmail labels handle the filtering
     """
     service = get_gmail_service()
     
-    # Load processed emails from JSON
-    processed_emails = load_processed_emails()
-    
-    # Fetch more emails (50-60)
-    resp = service.users().messages().list(userId="me", q=query, maxResults=60).execute()
+    # Fetch emails (Gmail query already excludes processed ones with -label:processed)
+    resp = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
     msgs = resp.get("messages", [])
     
     print(f"📧 Gmail returned {len(msgs)} emails")
 
     results = []
-    newly_processed_ids = set()
     
     for msg in msgs:
         message_id = msg["id"]
-        
-        # Skip if we've already processed this email
-        if message_id in processed_emails:
-            continue
             
         try:
             msg_detail = service.users().messages().get(userId="me", id=message_id, format="full").execute()
@@ -345,18 +326,9 @@ def fetch_application(query: str, download_dir: Optional[str] = None):
                 'fetched_at': datetime.now().isoformat()
             }
             results.append(result)
-            newly_processed_ids.add(message_id)
             
         except Exception as e:
             print(f"❌ Error fetching email {message_id}: {e}")
-            # Mark as processed even if failed to avoid retry loops
-            newly_processed_ids.add(message_id)
-
-    # Update processed emails list
-    if newly_processed_ids:
-        all_processed = processed_emails.union(newly_processed_ids)
-        save_processed_emails(all_processed)
-        print(f"💾 Saved {len(newly_processed_ids)} new processed email IDs")
 
     print(f"📊 New emails to process: {len(results)}")
     return results
@@ -673,14 +645,14 @@ if __name__ == "__main__":
 
             # Fetch 50-60 applications
             results = fetch_application(query, download_dir=download_folder)
-            
+            successful = 0
+            failed = 0
             if not results:
                 print("📭 No new applications found.")
             else:
                 print(f"📧 Found {len(results)} new applications to process")
                 
-                successful = 0
-                failed = 0
+                
                 
                 with open("automation_logs.txt", "a", encoding="utf-8") as f:
                     f.write(f"\n{'='*50}\n")
