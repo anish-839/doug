@@ -506,7 +506,7 @@ Focus on:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are an expert technical recruiter with 10+ years of experience in candidate evaluation."},
                 {"role": "user", "content": prompt}
@@ -753,19 +753,24 @@ if __name__ == "__main__":
                             """ adds the person to job """
 
                             url = f"https://app.loxo.co/api/{AGENCY_SLUG}/jobs/{job_id}/apply"
-                            files = { "resume": (resume_path, open(resume_path, "rb"), "application/pdf") }
-                            payload = {
-                                "name": f"{person}",
-                                "phone": f"{phone_number}",
-                                "email": f"{EXPECTED_EMAIL}",
-                                "source_type_id": "2028652",
-                            }
-                            headers = {
-                                "accept": "application/json",
-                                "authorization": f"Bearer {API_KEY}"
-                            }
+                            with open(resume_path, "rb") as resume_file:
+                                files = { "resume": (resume_path, resume_file, "application/pdf") }
+                                payload = {
+                                    "name": f"{person}",
+                                    "phone": f"{phone_number}",
+                                    "email": f"{EXPECTED_EMAIL}",
+                                    "source_type_id": "2028652",
+                                }
+                                headers = {
+                                    "accept": "application/json",
+                                    "authorization": f"Bearer {API_KEY}"
+                                }
 
-                            response = requests.post(url, data=payload, files=files, headers=headers)
+                                response = requests.post(url, data=payload, files=files, headers=headers)
+
+                            f.write("✓ Candidate Added to Job\n")
+
+                            #response = requests.post(url, data=payload, files=files, headers=headers)
                             f.write("✓ Candidate Added to Job\n")
                             if os.path.exists(resume_path):
                                 os.remove(resume_path)
