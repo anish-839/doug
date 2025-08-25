@@ -8,7 +8,6 @@ import json
 import time
 import threading
 import random
-#import os
 import requests
 import os, re, base64, tempfile
 from typing import Tuple, Optional, Dict, Any
@@ -281,6 +280,11 @@ def whatsapp_reply():
             send_delayed_message(error_message, from_number, delay=3)
             return str(resp)
 
+    # Handle completed conversations - ignore further messages
+    if user_state[from_number]['step'] == 'completed':
+        print(f"🚫 Ignoring message from completed user {from_number}: {incoming_msg}")
+        return str(resp)
+
     # Get the existing agent and question
     agent = user_state[from_number]['agent']
     current_question = user_state[from_number]['question']
@@ -298,61 +302,74 @@ def whatsapp_reply():
 
     # Check if we have completed all questions
     if "Thank you" in chatbot_response:
-        # Run evaluation once all questions are completed
+        # Send completion message
         send_delayed_message(chatbot_response, from_number, delay=4)
         
         # Send a follow-up message about next steps
         followup_message = "Someone from our team will review your responses and get back to you soon. Have a great day! "
         send_delayed_message(followup_message, from_number, delay=8)
         
-        evaluation_result = agent.evaluate_with_llm(agent.responses)
-        print(f"📊 Evaluation Result for {from_number}: {evaluation_result}")  # Print evaluation result in the terminal
-
-        person_id = 230252226
-        job_id = 3372115
-
-
-        url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
-
-        headers = {
-            "accept": "application/json",
-            "authorization": f"Bearer {API_KEY}"
-        }
-
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            person_data = response.json()
-            person_desc = person_data.get('description', '')
-            if person_desc:
-                person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
-        else:
-            person_desc = ""
-
-        print(person_desc)
+        # Mark conversation as completed but don't delete state yet
+        user_state[from_number]['step'] = 'completed'
         
-        overall_score = evaluation_result['overall_score']
-        qualifications_score = evaluation_result['qualifications_score']
-        enthusiasm_score = evaluation_result['enthusiasm_score']
-        availability_score = evaluation_result['availability_score']
-        feedback = evaluation_result['feedback']
+        # Run evaluation in background thread to avoid blocking
+        def run_evaluation():
+            time.sleep(2)  # Small delay before evaluation
+            evaluation_result = agent.evaluate_with_llm(agent.responses)
+            print(f"📊 Evaluation Result for {from_number}: {evaluation_result}")
+            
+            # Loxo integration
+            person_id = 230256089
+            job_id = 3372115
 
-        person_desc += f"\n\nChatbot Summary: {feedback}\n\nOverall Score: {overall_score}\n\nqualifications_score: {qualifications_score}\n\nenthusiasm_score: {enthusiasm_score}\n\navailability_score: {availability_score}"
+            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
+            headers = {
+                "accept": "application/json",
+                "authorization": f"Bearer {API_KEY}"
+            }
 
-        time.sleep(5)
-        url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
-        payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001--"""
-                            
-        headers = {
-            "accept": "application/json",
-            "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-            "authorization": f"Bearer {API_KEY}"
-        }
+            response = requests.get(url, headers=headers)
 
-        response = requests.put(url, data=payload, headers=headers)
-        print(response)
-        # Reset the conversation state after evaluation
-        del user_state[from_number]
+            if response.status_code == 200:
+                person_data = response.json()
+                person_desc = person_data.get('description', '')
+                if person_desc:
+                    person_desc = BeautifulSoup(person_desc, 'html.parser').get_text()
+            else:
+                person_desc = ""
+
+            print(f"📝 Current person description: {person_desc}")
+            
+            overall_score = evaluation_result['overall_score']
+            qualifications_score = evaluation_result['qualifications_score']
+            enthusiasm_score = evaluation_result['enthusiasm_score']
+            availability_score = evaluation_result['availability_score']
+            feedback = evaluation_result['feedback']
+
+            person_desc += f"\n\nChatbot Summary: {feedback}\n\nOverall Score: {overall_score}\n\nQualifications Score: {qualifications_score}\n\nEnthusiasm Score: {enthusiasm_score}\n\nAvailability Score: {availability_score}"
+
+            time.sleep(3)
+            url = f"https://app.loxo.co/api/{AGENCY_SLUG}/people/{person_id}"
+            payload = f"""-----011000010111000001101001\r\nContent-Disposition: form-data; name="job_id"\r\n\r\n{job_id}\r\n-----011000010111000001101001\r\nContent-Disposition: form-data; name="person[description]"\r\n\r\n{person_desc}\r\n-----011000010111000001101001--"""
+                                
+            headers = {
+                "accept": "application/json",
+                "content-type": "multipart/form-data; boundary=---011000010111000001101001",
+                "authorization": f"Bearer {API_KEY}"
+            }
+
+            response = requests.put(url, data=payload, headers=headers)
+            print(f"🔄 Loxo update response: {response.status_code}")
+            
+            # Clean up conversation state after evaluation is complete
+            if from_number in user_state:
+                del user_state[from_number]
+                print(f"🧹 Cleaned up conversation state for {from_number}")
+        
+        # Start evaluation in background thread
+        eval_thread = threading.Thread(target=run_evaluation)
+        eval_thread.daemon = True
+        eval_thread.start()
     else:
         # Send the next question with realistic delay
         user_state[from_number]['question'] = agent.current_question
@@ -368,5 +385,7 @@ if __name__ == "__main__":
     print("   - TWILIO_AUTH_TOKEN") 
     print("   - TWILIO_WHATSAPP_NUMBER")
     print("   - OPENAI_API_KEY")
+    print("   - LOXO_API")
+    print("   - LOXO_AGENCY_SLUG")
     print("\n🔗 Don't forget to update your Twilio webhook URL with your ngrok URL!")
     app.run(port=5000, debug=False)
