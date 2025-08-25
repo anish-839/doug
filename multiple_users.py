@@ -257,6 +257,44 @@ def mark_email_as_processed_in_gmail(service, message_id):
     except Exception as e:
         print(f"❌ Error marking email as processed in Gmail: {e}")
 
+def mark_email_as_manual_review_in_gmail(service, message_id):
+    """Add 'processed' label to email in Gmail"""
+    try:
+        # First, get or create the 'processed' label
+        labels = service.users().labels().list(userId='me').execute()
+        review_label_id = None
+        
+        for label in labels.get('labels', []):
+            if label['name'].lower() == 'manualreview':
+                review_label_id = label['id']
+                break
+        
+        # Create label if it doesn't exist
+        if not review_label_id:
+            label_object = {
+                'name': 'manualreview',
+                'messageListVisibility': 'show',
+                'labelListVisibility': 'labelShow'
+            }
+            created_label = service.users().labels().create(userId='me', body=label_object).execute()
+            review_label_id = created_label['id']
+        
+        # Add the label to the message
+        modify_request = {
+            'addLabelIds': [review_label_id]
+        }
+        
+        service.users().messages().modify(
+            userId='me', 
+            id=message_id, 
+            body=modify_request
+        ).execute()
+        
+        print(f"✅ Marked email {message_id} as manualreview in Gmail")
+        
+    except Exception as e:
+        print(f"❌ Error marking email as manualreview in Gmail: {e}")
+
 # ---------- Public function ----------
 
 def send_sms_message(to_number):
@@ -290,6 +328,19 @@ def extract_text_from_pdf(pdf_file):
     except Exception as e:
         print(f"❌ Failed to extract text from PDF. Error: {e}")
         return None
+
+def get_job_prompt(job_title):
+    with open('job_promts.json', 'r') as file:
+        job_prompts = json.load(file)
+    
+    # Perform a case-insensitive partial match on job title
+    for job_name, job_data in job_prompts.items():
+        if job_title.lower() in job_name.lower():  # Partial match, case insensitive
+            return job_data["prompt"]  # Return the prompt for the matched job
+
+    # If no match is found
+    general = "You are an expert recruiter. Evaluate this candidate for the given job position."
+    return general
 
 def fetch_application(query: str, download_dir: Optional[str] = None, max_results: int = 60):
     """
@@ -473,20 +524,30 @@ def retrieve_job_description(job_id):
 
 
 # Function to evaluate candidate with LLM
-def evaluate_candidate_with_llm(resume_text, clean_description):
+def evaluate_candidate_with_llm(resume_text, clean_description, job_title):
     """Use OpenAI to evaluate candidate fit for the job"""
+    
+    # Get the job-specific prompt based on the job title
+    job_prompt = get_job_prompt(job_title)
+    
+    if job_prompt is None:
+        raise ValueError(f"Job prompt for '{job_title}' not found!")
 
+    # Combine the job prompt with the resume and job description
     prompt = f"""
-You are an expert recruiter. Evaluate this candidate for the given job position.
+    You are an expert recruiter. Evaluate this candidate for the given job position.
+    
+    **Job Details:**
+    Job Description: {clean_description}
+    
 
-**Job Details:**
-Job Description: {clean_description}
-Primary Skills: Python, LangChain, LLM APIs, FAISS, Weaviate, Pinecone, and more
+    **Candidate Profile:**
+    Resume Content: {resume_text}
 
-**Candidate Profile:**
-Resume Content: {resume_text}
-
-**Please provide evaluation in this JSON format:**
+    **Job Evaluation Criteria:**
+    {job_prompt}
+    
+    **Please provide evaluation in this JSON format:**
 {{
     "overall_score": <number between 0-100>,
     "recommendation": "<HIRE/INTERVIEW/PASS>",
@@ -511,7 +572,7 @@ Focus on:
                 {"role": "system", "content": "You are an expert technical recruiter with 10+ years of experience in candidate evaluation."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
+            temperature=0.4,
             max_tokens=1500
         )
 
@@ -594,7 +655,7 @@ def extract_email(resume_text):
         return None
 
 # Main function to process candidate resume
-def process_candidate_resume(job_id):
+def process_candidate_resume(job_id, job_title):
     # Download the resume
     
     
@@ -605,7 +666,7 @@ def process_candidate_resume(job_id):
     job_description = retrieve_job_description(job_id)
 
     # Send the resume text and job description to LLM for evaluation
-    evaluation_result = evaluate_candidate_with_llm(resume_text, job_description)
+    evaluation_result = evaluate_candidate_with_llm(resume_text, job_description, job_title)
     #evaluation_result = "good"
     print(f"📝 Evaluation Result: {evaluation_result}")
 
@@ -619,12 +680,12 @@ if __name__ == "__main__":
     print("1. Run once (process current emails)")
     print("2. Run continuously (every 10 minutes)")
     
-    choice = input("Enter choice (1 or 2): ").strip()
+    #choice = input("Enter choice (1 or 2): ").strip()
     
-    if choice == "2":
-        print("🚀 Starting continuous email automation...")
-        print("⏰ Will check for new emails every 10 minutes")
-        print("🛑 Press Ctrl+C to stop")
+    # if choice == "2":
+    #     print("🚀 Starting continuous email automation...")
+    #     print("⏰ Will check for new emails every 10 minutes")
+    #     print("🛑 Press Ctrl+C to stop")
     
     cycle_count = 0
 
@@ -738,7 +799,7 @@ if __name__ == "__main__":
                             f.write("✓ Found Matching Job\n")
                             
                             print("🔗 Processing candidate's resume and job description...")
-                            job_description, evaluation_result = process_candidate_resume(job_id)
+                            job_description, evaluation_result = process_candidate_resume(job_id, job_title)
                             
                             print(job_id)
                             print(person)
@@ -771,7 +832,7 @@ if __name__ == "__main__":
                             f.write("✓ Candidate Added to Job\n")
 
                             #response = requests.post(url, data=payload, files=files, headers=headers)
-                            f.write("✓ Candidate Added to Job\n")
+                            #f.write("✓ Candidate Added to Job\n")
                             if os.path.exists(resume_path):
                                 os.remove(resume_path)
                                 print(f"✅ Deleted the resume file: {resume_path}")
@@ -844,12 +905,13 @@ if __name__ == "__main__":
 
                         except Exception as e:
                             f.write(f"❌ Error processing {result.get('candidate_name', 'Unknown')}: {str(e)}\n")
+                            mark_email_as_manual_review_in_gmail(get_gmail_service(), message_id)
                             f.flush()
                             print(f"❌ Error processing application for {result.get('candidate_name', 'Unknown')}: {e}")
                             failed += 1
                         
                         # Small delay between applications
-                        time.sleep(10)
+                        time.sleep(20)
                     
                     # Write cycle summary
                     f.write(f"\n{'='*50}\n")
@@ -860,14 +922,14 @@ if __name__ == "__main__":
             print(f"\n✅ Cycle #{cycle_count} completed!")
             print(f"📊 Results: {successful} successful, {failed} failed")
             
-            if choice == "1":
-                break  # Exit after one cycle for single run
+            # if choice == "1":
+            #     break  # Exit after one cycle for single run
             
             print(f"⏰ Waiting 10 minutes before next cycle...")
             print(f"💤 Next cycle will start at: {(datetime.now() + timedelta(minutes=10)).strftime('%H:%M:%S')}")
             
             # Wait 10 minutes (600 seconds)
-            time.sleep(120)
+            time.sleep(600)
             
             """since while loop is not broken the next cycle is started after the above time"""
 
