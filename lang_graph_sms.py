@@ -524,7 +524,7 @@ def whatsapp_reply():
     # Get current user state from Redis
     user_state = state_manager.get_user_state(from_number)
     
-    if not user_state or user_state.get('step') not in ['ask_job_title', 'asking_questions', 'completed']:
+    if not user_state or user_state.get('step') not in ['ask_job_title', 'ask_email', 'asking_questions', 'completed']:
         # New user or corrupted state - ask for job title and initialize state
         state_manager.set_user_state(from_number, {
             'step': 'ask_job_title',
@@ -551,30 +551,62 @@ def whatsapp_reply():
                 break
         
         if matched_job:
+            # Move to email collection step
             state_manager.update_user_state(from_number, {
-                'step': 'asking_questions',
-                'job_title': matched_job,
-                'email': 'test@example.com',  # Mock email for testing
-                'person_id': None,  # No person_id for testing
-                'person_name': 'Test User'
+                'step': 'ask_email',
+                'job_title': matched_job
             })
             
             confirmation = f"Perfect! I see you're interested in the *{matched_job}* position. ✅"
             send_delayed_message.delay(confirmation, from_number, 2)
             
-            # Initialize agent and start asking questions
-            agent = JobScreeningAgent(matched_job, from_number)
-            
-            greeting = f"Great! Let me ask you a few questions to get to know you better. 🤔"
-            send_delayed_message.delay(greeting, from_number, 4)
-            
-            # Send the first question
-            question = agent.get_question()
-            send_delayed_message.delay(question, from_number, 6)
+            email_request = "Great! To proceed with your application, could you please provide your email address? 📧"
+            send_delayed_message.delay(email_request, from_number, 4)
         else:
             available_jobs = ", ".join(job_questions.keys())
             error_msg = f"Hmm, I couldn't find that position. Available roles: {available_jobs}. Could you try again? 🔍"
             send_delayed_message.delay(error_msg, from_number, 3)
+        
+        return str(resp)
+    
+    # Handle email input
+    if user_state['step'] == 'ask_email':
+        email = incoming_msg.strip()
+        
+        # Basic email validation
+        if '@' not in email or '.' not in email:
+            error_msg = "That doesn't look like a valid email address. Could you please try again? 📧"
+            send_delayed_message.delay(error_msg, from_number, 2)
+            return str(resp)
+        
+        # Search for person in Loxo
+        person_info = search_person_by_email(email)
+        
+        if person_info:
+            person_name, person_id, phone_number = person_info
+            greeting_name = f"Hi {person_name}! " if person_name else "Hi there! "
+        else:
+            person_name = None
+            person_id = None
+            greeting_name = "Hi there! "
+            print(f"Person not found in Loxo for email: {email}")
+        
+        # Update state with person information
+        state_manager.update_user_state(from_number, {
+            'step': 'asking_questions',
+            'email': email,
+            'person_id': person_id,
+            'person_name': person_name
+        })
+        
+        # Send greeting and start questions
+        greeting_msg = f"{greeting_name}Thanks for providing your email! Let me ask you a few questions to get to know you better. 🤔"
+        send_delayed_message.delay(greeting_msg, from_number, 3)
+        
+        # Initialize agent and send first question
+        agent = JobScreeningAgent(user_state['job_title'], from_number)
+        question = agent.get_question()
+        send_delayed_message.delay(question, from_number, 5)
         
         return str(resp)
     
