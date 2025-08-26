@@ -591,12 +591,14 @@ def whatsapp_reply():
             greeting_name = "Hi there! "
             print(f"Person not found in Loxo for email: {email}")
         
-        # Update state with person information
+        # Update state with person information and initialize conversation state
         state_manager.update_user_state(from_number, {
             'step': 'asking_questions',
             'email': email,
             'person_id': person_id,
-            'person_name': person_name
+            'person_name': person_name,
+            'current_question': 0,  # Initialize question tracking
+            'responses': []  # Initialize responses list
         })
         
         # Send greeting and start questions
@@ -622,6 +624,10 @@ def whatsapp_reply():
             agent = JobScreeningAgent(user_state['job_title'], from_number)
             agent.add_response(incoming_msg)
             
+            print(f"Current question index: {agent.get_current_state()['current_question']}")
+            print(f"Total questions: {len(agent.questions)}")
+            print(f"Is completed: {agent.is_completed()}")
+            
             # Send acknowledgment occasionally
             if random.random() < 0.4:
                 acknowledgments = ["Got it! 👍", "Thanks for that info. 📝", "Interesting! 🤔", "I see. ✨", "Noted. ✅"]
@@ -629,6 +635,8 @@ def whatsapp_reply():
                 send_delayed_message.delay(ack, from_number, 1.5)
             
             if agent.is_completed():
+                print(f"✅ Conversation completed for {from_number}")
+                
                 # All questions answered
                 completion_msg = add_human_touch_to_message("Thank you for answering all the questions!")
                 send_delayed_message.delay(completion_msg, from_number, 4)
@@ -642,6 +650,10 @@ def whatsapp_reply():
                 # Start async evaluation
                 responses = agent.get_responses()
                 person_id = user_state.get('person_id')
+                
+                print(f"🔥 Triggering evaluation for {from_number}")
+                print(f"Person ID: {person_id}")
+                print(f"Responses: {responses}")
                 
                 process_evaluation.delay(
                     from_number, 
@@ -709,6 +721,28 @@ def reset_user_endpoint(phone_number):
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
+@app.route('/test-celery')
+def test_celery():
+    """Test Celery task processing"""
+    try:
+        # Test a simple delayed message
+        result = send_delayed_message.delay(
+            "This is a test message from Celery", 
+            "whatsapp:+1234567890",  # Dummy number
+            1
+        )
+        return jsonify({
+            "message": "Celery test task queued",
+            "task_id": result.id,
+            "status": "queued",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "error": f"Celery test failed: {str(e)}",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }), 500
+
 @app.route('/test')
 def test_endpoint():
     """Test endpoint to verify the bot is working"""
@@ -719,6 +753,7 @@ def test_endpoint():
             "/health": "Health check",
             "/stats": "Redis statistics",
             "/reset/<phone_number>": "Reset user conversation",
+            "/test-celery": "Test Celery worker",
             "/test": "This test endpoint"
         },
         "timestamp": datetime.now(timezone.utc).isoformat()
