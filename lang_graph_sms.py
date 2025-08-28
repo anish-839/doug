@@ -365,14 +365,14 @@ def add_human_touch_to_message(message):
     """Add slight variations to make messages feel more human"""
     variations = {
         "Thank you for answering all the questions!": [
-            "Perfect! That's all the questions I have for you. Thank you for your time! 🙏",
-            "Great! We've covered everything. Thanks so much for your responses! 👍",
-            "Excellent! That completes our screening. Thank you for participating! ✨"
+            "Perfect! That's all the questions I have for you. Thank you for your time! ",
+            "Great! We've covered everything. Thanks so much for your responses! ",
+            "Excellent! That completes our screening. Thank you for participating! "
         ],
         "Thanks for responding!": [
-            "Hi there! Thanks for getting back to us! 😊",
-            "Hello! Great to hear from you! 👋",
-            "Hey! Thanks for responding so quickly! ⚡"
+            "Hi there! Thanks for getting back to us! ",
+            "Hello! Great to hear from you! ",
+            "Hey! Thanks for responding so quickly! "
         ]
     }
     
@@ -517,7 +517,7 @@ def whatsapp_reply():
     # Check for reset command
     if incoming_msg and incoming_msg.strip().lower() in ['reset', 'start over', 'restart']:
         reset_user_conversation(from_number)
-        reset_msg = "Great! Let's start fresh. What position are you applying for? 📋"
+        reset_msg = "Great! Let's start fresh. What position are you applying for? "
         send_delayed_message.delay(reset_msg, from_number, 2)
         return str(resp)
     
@@ -534,7 +534,7 @@ def whatsapp_reply():
         welcome_message = add_human_touch_to_message("Thanks for responding!")
         send_delayed_message.delay(welcome_message, from_number, 2)
         
-        job_request = "Before we get started, could you please specify the position you applied for? 📋"
+        job_request = "Before we get started, could you please specify the position you applied for? "
         send_delayed_message.delay(job_request, from_number, 5)
         
         return str(resp)
@@ -557,14 +557,14 @@ def whatsapp_reply():
                 'job_title': matched_job
             })
             
-            confirmation = f"Perfect! I see you're interested in the *{matched_job}* position. ✅"
+            confirmation = f"Perfect! I see you're interested in the *{matched_job}* position. "
             send_delayed_message.delay(confirmation, from_number, 2)
             
-            email_request = "Great! To proceed with your application, could you please provide your email address? 📧"
+            email_request = "Great! To proceed with your application, could you please provide your email address? "
             send_delayed_message.delay(email_request, from_number, 4)
         else:
             available_jobs = ", ".join(job_questions.keys())
-            error_msg = f"Hmm, I couldn't find that position. Available roles: {available_jobs}. Could you try again? 🔍"
+            error_msg = f"Hmm, I couldn't find that position. Available roles: {available_jobs}. Could you try again? "
             send_delayed_message.delay(error_msg, from_number, 3)
         
         return str(resp)
@@ -575,7 +575,7 @@ def whatsapp_reply():
         
         # Basic email validation
         if '@' not in email or '.' not in email:
-            error_msg = "That doesn't look like a valid email address. Could you please try again? 📧"
+            error_msg = "That doesn't look like a valid email address. Could you please try again? "
             send_delayed_message.delay(error_msg, from_number, 2)
             return str(resp)
         
@@ -602,7 +602,7 @@ def whatsapp_reply():
         })
         
         # Send greeting and start questions
-        greeting_msg = f"{greeting_name}Thanks for providing your email! Let me ask you a few questions to get to know you better. 🤔"
+        greeting_msg = f"{greeting_name}Thanks for providing your email! Let me ask you a few questions to get to know you better. "
         send_delayed_message.delay(greeting_msg, from_number, 3)
         
         # Initialize agent and send first question
@@ -614,7 +614,7 @@ def whatsapp_reply():
     
     # Handle completed conversations
     if user_state['step'] == 'completed':
-        final_msg = "Thanks for your interest! Someone will be in touch soon. Have a great day! 😊\n\nType 'reset' if you want to start a new conversation."
+        final_msg = "Thanks for your interest! Someone will be in touch soon. Have a great day! \n\nType 'reset' if you want to start a new conversation."
         send_delayed_message.delay(final_msg, from_number, 2)
         return str(resp)
     
@@ -630,7 +630,7 @@ def whatsapp_reply():
             
             # Send acknowledgment occasionally
             if random.random() < 0.4:
-                acknowledgments = ["Got it! 👍", "Thanks for that info. 📝", "Interesting! 🤔", "I see. ✨", "Noted. ✅"]
+                acknowledgments = ["Got it! ", "Thanks for that info. ", "Interesting! ", "I see. ", "Noted. "]
                 ack = random.choice(acknowledgments)
                 send_delayed_message.delay(ack, from_number, 1.5)
             
@@ -641,7 +641,7 @@ def whatsapp_reply():
                 completion_msg = add_human_touch_to_message("Thank you for answering all the questions!")
                 send_delayed_message.delay(completion_msg, from_number, 4)
                 
-                followup_msg = "Someone from our team will review your responses and get back to you soon. Have a great day! 🌟"
+                followup_msg = "Someone from our team will review your responses and get back to you soon. Have a great day! "
                 send_delayed_message.delay(followup_msg, from_number, 8)
                 
                 # Mark as completed
@@ -672,7 +672,7 @@ def whatsapp_reply():
             print(f"Error in conversation handling: {e}")
             # Reset conversation on error
             reset_user_conversation(from_number)
-            error_msg = "Sorry, something went wrong. Let's start fresh! What position are you applying for? 📋"
+            error_msg = "Sorry, something went wrong. Let's start fresh! What position are you applying for? "
             send_delayed_message.delay(error_msg, from_number, 3)
     
     return str(resp)
