@@ -22,8 +22,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-# Updated for WhatsApp Sandbox
-TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")  # Default Twilio WhatsApp Sandbox number
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_NUMBER")  # Your Twilio SMS phone number
 API_KEY = os.getenv("LOXO_API")
 AGENCY_SLUG = os.getenv("LOXO_AGENCY_SLUG")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -40,7 +39,7 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 # Initialize Celery for async processing
 celery_app = Celery(
-    'lang_graph_sms',  # This should match your filename
+    'lang_graph_sms',  # Updated name
     broker=REDIS_URL,
     backend=REDIS_URL
 )
@@ -53,7 +52,7 @@ celery_app.conf.update(
     timezone='UTC',
     enable_utc=True,
     task_routes={
-        'lang_graph_sms.send_delayed_message': {'queue': 'whatsapp_queue'},
+        'lang_graph_sms.send_delayed_message': {'queue': 'sms_queue'},
         'lang_graph_sms.process_evaluation': {'queue': 'evaluation_queue'},
         'lang_graph_sms.update_loxo': {'queue': 'loxo_queue'}
     },
@@ -112,42 +111,41 @@ def search_person_by_email(email):
     """Search for person by email in Loxo API"""
     url = f"{BASE}/people?query={email}&per_page=5"
     
-    print(f"🔍 Hitting: {url}")
+    print(f"Searching Loxo API: {url}")
     resp = requests.get(url, headers=HEADERS)
-    print(f"🔢 Status Code: {resp.status_code}")
+    print(f"Status Code: {resp.status_code}")
     
     if resp.status_code != 200:
-        print(f"❌ API Error: {resp.status_code}")
+        print(f"API Error: {resp.status_code}")
         return None
     
     data = resp.json()
     total_count = data.get("total_count", 0)
-    print(f"📊 Total count of people: {total_count}")
+    print(f"Total people found: {total_count}")
     
     people = data.get("people", [])
     
     if not people:
-        print("⚠️ No people found.")
+        print("No people found.")
         return None
     
     for person in people:
-        print(f"🔍 Checking person: {person['name']}")
-        print(f"Person object: {person}")
+        print(f"Checking person: {person['name']}")
         
         # Check emails
         for email_obj in person.get('emails', []):
             person_email = email_obj.get('value')
             if person_email and person_email.lower() == email.lower():
-                print(f"✅ Found matching candidate: {person['name']}")
+                print(f"Found matching candidate: {person['name']}")
                 person_id = person.get('id')
                 phone_numbers = person.get('phones', [])
                 phone_number = phone_numbers[0].get('value') if phone_numbers else None
-                print(f"📱 Phone number: {phone_number}")
+                print(f"Phone number: {phone_number}")
                 person_name = person.get('name')
                 
                 return person_name, person_id, phone_number
     
-    print(f"❌ No person found with email: {email}")
+    print(f"No person found with email: {email}")
     return None
 
 class RedisStateManager:
@@ -193,7 +191,7 @@ state_manager = RedisStateManager(redis_client)
 # Async tasks using Celery
 @celery_app.task(bind=True, max_retries=3)
 def send_delayed_message(self, message, to_number, delay=None):
-    """Send WhatsApp message with delay - async task"""
+    """Send SMS message with delay - async task"""
     try:
         if delay:
             time.sleep(delay)
@@ -202,22 +200,22 @@ def send_delayed_message(self, message, to_number, delay=None):
             delay_time = random.uniform(2, 6)
             time.sleep(delay_time)
         
-        # Ensure the to_number has whatsapp: prefix
-        if not to_number.startswith('whatsapp:'):
-            to_number = f"whatsapp:{to_number}"
+        # Clean phone number (remove any prefixes)
+        clean_number = to_number.replace('whatsapp:', '').strip()
         
-        # Send the WhatsApp message
+        # Send the SMS message
         message_instance = twilio_client.messages.create(
             body=message,
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=to_number
+            from_=TWILIO_PHONE_NUMBER,
+            messaging_service_sid="MG1eb710ef78a892f29764c8f3d9698e1f",
+            to=clean_number
         )
         
-        print(f"Sent WhatsApp message to {to_number}: {message}")
+        print(f"Sent SMS to {clean_number}: {message}")
         return {"status": "sent", "sid": message_instance.sid}
         
     except Exception as e:
-        print(f"Error sending WhatsApp message: {e}")
+        print(f"Error sending SMS: {e}")
         # Retry with exponential backoff
         raise self.retry(countdown=60 * (2 ** self.request.retries))
 
@@ -294,7 +292,7 @@ def update_loxo(self, person_id, evaluation_data):
         availability_score = evaluation_data['availability_score']
         feedback = evaluation_data['feedback']
         
-        person_desc += f"\n\nChatbot Summary: {feedback}\n\n"
+        person_desc += f"\n\nSMS Bot Summary: {feedback}\n\n"
         person_desc += f"Overall Score: {overall_score}\n"
         person_desc += f"Qualifications Score: {qualifications_score}\n"
         person_desc += f"Enthusiasm Score: {enthusiasm_score}\n"
@@ -365,14 +363,14 @@ def add_human_touch_to_message(message):
     """Add slight variations to make messages feel more human"""
     variations = {
         "Thank you for answering all the questions!": [
-            "Perfect! That's all the questions I have for you. Thank you for your time! ",
-            "Great! We've covered everything. Thanks so much for your responses! ",
-            "Excellent! That completes our screening. Thank you for participating! "
+            "Perfect! That's all the questions I have for you. Thank you for your time!",
+            "Great! We've covered everything. Thanks so much for your responses!",
+            "Excellent! That completes our screening. Thank you for participating!"
         ],
         "Thanks for responding!": [
-            "Hi there! Thanks for getting back to us! ",
-            "Hello! Great to hear from you! ",
-            "Hey! Thanks for responding so quickly! "
+            "Hi there! Thanks for getting back to us!",
+            "Hello! Great to hear from you!",
+            "Hey! Thanks for responding so quickly!"
         ]
     }
     
@@ -504,12 +502,12 @@ def reset_user_conversation(phone_number):
     print(f"Resetting conversation for {phone_number}")
     state_manager.delete_user_state(phone_number)
 
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp_reply():
+@app.route('/sms', methods=['POST'])
+def sms_reply():
     incoming_msg = request.form.get("Body")
     from_number = request.form.get("From")
     
-    print(f"WhatsApp from {from_number}: {incoming_msg}")
+    print(f"SMS from {from_number}: {incoming_msg}")
     
     # Return empty TwiML response immediately
     resp = MessagingResponse()
@@ -517,7 +515,7 @@ def whatsapp_reply():
     # Check for reset command
     if incoming_msg and incoming_msg.strip().lower() in ['reset', 'start over', 'restart']:
         reset_user_conversation(from_number)
-        reset_msg = "Great! Let's start fresh. What position are you applying for? "
+        reset_msg = "Great! Let's start fresh. What position are you applying for?"
         send_delayed_message.delay(reset_msg, from_number, 2)
         return str(resp)
     
@@ -534,7 +532,7 @@ def whatsapp_reply():
         welcome_message = add_human_touch_to_message("Thanks for responding!")
         send_delayed_message.delay(welcome_message, from_number, 2)
         
-        job_request = "Before we get started, could you please specify the position you applied for? "
+        job_request = "Before we get started, could you please specify the position you applied for?"
         send_delayed_message.delay(job_request, from_number, 5)
         
         return str(resp)
@@ -557,14 +555,14 @@ def whatsapp_reply():
                 'job_title': matched_job
             })
             
-            confirmation = f"Perfect! I see you're interested in the *{matched_job}* position. "
+            confirmation = f"Perfect! I see you're interested in the {matched_job} position."
             send_delayed_message.delay(confirmation, from_number, 2)
             
-            email_request = "Great! To proceed with your application, could you please provide your email address? "
+            email_request = "Great! To proceed with your application, could you please provide your email address?"
             send_delayed_message.delay(email_request, from_number, 4)
         else:
             available_jobs = ", ".join(job_questions.keys())
-            error_msg = f"Hmm, I couldn't find that position. Available roles: {available_jobs}. Could you try again? "
+            error_msg = f"Hmm, I couldn't find that position. Available roles: {available_jobs}. Could you try again?"
             send_delayed_message.delay(error_msg, from_number, 3)
         
         return str(resp)
@@ -575,7 +573,7 @@ def whatsapp_reply():
         
         # Basic email validation
         if '@' not in email or '.' not in email:
-            error_msg = "That doesn't look like a valid email address. Could you please try again? "
+            error_msg = "That doesn't look like a valid email address. Could you please try again?"
             send_delayed_message.delay(error_msg, from_number, 2)
             return str(resp)
         
@@ -602,7 +600,7 @@ def whatsapp_reply():
         })
         
         # Send greeting and start questions
-        greeting_msg = f"{greeting_name}Thanks for providing your email! Let me ask you a few questions to get to know you better. "
+        greeting_msg = f"{greeting_name}Thanks for providing your email! Let me ask you a few questions to get to know you better."
         send_delayed_message.delay(greeting_msg, from_number, 3)
         
         # Initialize agent and send first question
@@ -614,7 +612,7 @@ def whatsapp_reply():
     
     # Handle completed conversations
     if user_state['step'] == 'completed':
-        final_msg = "Thanks for your interest! Someone will be in touch soon. Have a great day! \n\nType 'reset' if you want to start a new conversation."
+        final_msg = "Thanks for your interest! Someone will be in touch soon. Have a great day!\n\nType 'reset' if you want to start a new conversation."
         send_delayed_message.delay(final_msg, from_number, 2)
         return str(resp)
     
@@ -630,18 +628,18 @@ def whatsapp_reply():
             
             # Send acknowledgment occasionally
             if random.random() < 0.4:
-                acknowledgments = ["Got it! ", "Thanks for that info. ", "Interesting! ", "I see. ", "Noted. "]
+                acknowledgments = ["Got it!", "Thanks for that info.", "Interesting!", "I see.", "Noted."]
                 ack = random.choice(acknowledgments)
                 send_delayed_message.delay(ack, from_number, 1.5)
             
             if agent.is_completed():
-                print(f"✅ Conversation completed for {from_number}")
+                print(f"Conversation completed for {from_number}")
                 
                 # All questions answered
                 completion_msg = add_human_touch_to_message("Thank you for answering all the questions!")
                 send_delayed_message.delay(completion_msg, from_number, 4)
                 
-                followup_msg = "Someone from our team will review your responses and get back to you soon. Have a great day! "
+                followup_msg = "Someone from our team will review your responses and get back to you soon. Have a great day!"
                 send_delayed_message.delay(followup_msg, from_number, 8)
                 
                 # Mark as completed
@@ -651,7 +649,7 @@ def whatsapp_reply():
                 responses = agent.get_responses()
                 person_id = user_state.get('person_id')
                 
-                print(f"🔥 Triggering evaluation for {from_number}")
+                print(f"Triggering evaluation for {from_number}")
                 print(f"Person ID: {person_id}")
                 print(f"Responses: {responses}")
                 
@@ -672,7 +670,7 @@ def whatsapp_reply():
             print(f"Error in conversation handling: {e}")
             # Reset conversation on error
             reset_user_conversation(from_number)
-            error_msg = "Sorry, something went wrong. Let's start fresh! What position are you applying for? "
+            error_msg = "Sorry, something went wrong. Let's start fresh! What position are you applying for?"
             send_delayed_message.delay(error_msg, from_number, 3)
     
     return str(resp)
@@ -689,7 +687,7 @@ def health_check():
     
     return jsonify({
         "status": "healthy",
-        "service": "WhatsApp Job Screening Bot",
+        "service": "SMS Job Screening Bot",
         "redis": redis_status,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
@@ -708,13 +706,9 @@ def get_stats():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/reset/<phone_number>')
+@app.route('/reset/<path:phone_number>')
 def reset_user_endpoint(phone_number):
     """Endpoint to manually reset a user's conversation"""
-    # Add whatsapp: prefix if not present
-    if not phone_number.startswith('whatsapp:'):
-        phone_number = f"whatsapp:{phone_number}"
-    
     reset_user_conversation(phone_number)
     return jsonify({
         "message": f"Reset conversation for {phone_number}",
@@ -728,7 +722,7 @@ def test_celery():
         # Test a simple delayed message
         result = send_delayed_message.delay(
             "This is a test message from Celery", 
-            "whatsapp:+1234567890",  # Dummy number
+            "+1234567890",  # Dummy number
             1
         )
         return jsonify({
@@ -747,9 +741,9 @@ def test_celery():
 def test_endpoint():
     """Test endpoint to verify the bot is working"""
     return jsonify({
-        "message": "WhatsApp Job Screening Bot is running!",
+        "message": "SMS Job Screening Bot is running!",
         "endpoints": {
-            "/whatsapp": "Main WhatsApp webhook endpoint",
+            "/sms": "Main SMS webhook endpoint",
             "/health": "Health check",
             "/stats": "Redis statistics",
             "/reset/<phone_number>": "Reset user conversation",
