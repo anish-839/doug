@@ -893,6 +893,7 @@ if __name__ == "__main__":
                             mark_email_as_manual_review_in_gmail(get_gmail_service(), message_id)
                             logger.info("Email marked for manual review")
                             failed += 1
+                            os.remove(resume_path)
                             continue
                             
                         logger.info(f"✅ Found candidate: {person} (ID: {person_id})")
@@ -929,6 +930,7 @@ if __name__ == "__main__":
                         if not job:
                             logger.warning(f"❌ Job '{job_title}' not found for state {state_code}")
                             failed += 1
+                            os.remove(resume_path)
                             continue
                             
                         logger.info(f"✅ Found matching job: {job} (ID: {job_id})")
